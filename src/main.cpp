@@ -26,9 +26,9 @@
 #include "ImGui/backends/imgui_impl_opengl3.h"
 #include "ImGui/backends/imgui_impl_android.h"
 
-// ===================== Backup Path Config =====================
+// ===================== 【改回根目录】备份路径配置 =====================
 #define BASE_DIR        "/storage/emulated/0/Android/data/com.stardust.mclauncher/files/games/com.mojang/"
-#define ROOT_DIR        "/storage/emulated/0/MCBackup"
+#define ROOT_DIR        "/storage/emulated/0/MCBackup" // 手机根目录MCBackup文件夹
 #define DIRS_BEHAVIOR   "behavior_packs"
 #define DIRS_RESOURCE   "resource_packs"
 #define DIRS_SKIN       "skin_packs"
@@ -59,6 +59,21 @@ static EGLBoolean (*orig_eglSwapBuffers)(EGLDisplay, EGLSurface) = nullptr;
 static void (*orig_Input1)(void*, void*, void*) = nullptr;
 static int32_t (*orig_Input2)(void*, void*, bool, long, uint32_t*, AInputEvent**) = nullptr;
 
+// ===================== 【强制创建文件夹】工具函数 =====================
+static bool ensure_backup_dir() {
+    try {
+        // 强制创建文件夹，包括父目录
+        std::filesystem::create_directories(ROOT_DIR);
+        // 检查是否真的创建成功
+        if (std::filesystem::exists(ROOT_DIR) && std::filesystem::is_directory(ROOT_DIR)) {
+            return true;
+        }
+        return false;
+    } catch (...) {
+        return false;
+    }
+}
+
 // ===================== Log =====================
 static std::string get_log_path() {
     return std::string(ROOT_DIR) + "/backup_log.txt";
@@ -74,6 +89,7 @@ static void log(const std::string& msg) {
         formatted_msg = std::string(time_buf) + msg;
     }
 
+    // 线程安全更新UI日志
     {
         std::lock_guard<std::mutex> lock(g_state_mutex);
         g_backup_state.recent_logs.push_back(formatted_msg);
@@ -81,8 +97,9 @@ static void log(const std::string& msg) {
             g_backup_state.recent_logs.erase(g_backup_state.recent_logs.begin());
     }
 
+    // 写日志前先确保文件夹存在
+    ensure_backup_dir();
     try {
-        std::filesystem::create_directories(ROOT_DIR);
         FILE* f = fopen(get_log_path().c_str(), "a+");
         if (f) {
             fprintf(f, "%s\n", formatted_msg.c_str());
@@ -91,12 +108,17 @@ static void log(const std::string& msg) {
     } catch (...) {}
 }
 
-// ===================== Compress Folder =====================
+// ===================== 压缩功能 =====================
 static bool compress_folder(const std::string& src_path, const std::string& dest_path) {
     remove(TMP_ZIP);
+    remove(dest_path.c_str());
+
     int error = 0;
     zip_t* zip = zip_open(TMP_ZIP, ZIP_CREATE | ZIP_TRUNCATE, &error);
-    if (!zip) return false;
+    if (!zip) {
+        log("❌ Failed to create temp zip, error code: " + std::to_string(error));
+        return false;
+    }
 
     bool all_ok = true;
     try {
@@ -109,30 +131,56 @@ static bool compress_folder(const std::string& src_path, const std::string& dest
                 zip_dir_add(zip, relative_path.c_str(), 0);
             } else if (entry.is_regular_file()) {
                 FILE* f = fopen(full_path.c_str(), "rb");
-                if (!f) continue;
+                if (!f) {
+                    log("⚠️ Skip unreadable file: " + relative_path);
+                    continue;
+                }
 
                 fseek(f, 0, SEEK_END);
                 long file_size = ftell(f);
                 fseek(f, 0, SEEK_SET);
 
                 zip_source_t* source = zip_source_filep(zip, f, 0, file_size);
-                if (!source) { fclose(f); continue; }
+                if (!source) { 
+                    fclose(f); 
+                    log("⚠️ Failed to create zip source: " + relative_path);
+                    continue; 
+                }
                 if (zip_file_add(zip, relative_path.c_str(), source, ZIP_FL_OVERWRITE) < 0) {
-                    zip_source_free(source); fclose(f); continue;
+                    zip_source_free(source); 
+                    fclose(f); 
+                    log("⚠️ Failed to add file to zip: " + relative_path);
+                    continue;
                 }
             }
         }
-    } catch (...) { all_ok = false; }
+    } catch (const std::exception& e) {
+        log("❌ Failed to scan folder: " + std::string(e.what()));
+        all_ok = false;
+    } catch (...) { 
+        log("❌ Unknown error when scanning folder");
+        all_ok = false; 
+    }
 
-    if (zip_close(zip) < 0) { zip_discard(zip); all_ok = false; }
-    if (!all_ok) { remove(TMP_ZIP); return false; }
+    if (zip_close(zip) < 0) { 
+        log("❌ Failed to close zip file");
+        zip_discard(zip); 
+        all_ok = false; 
+    }
 
+    if (!all_ok) { 
+        remove(TMP_ZIP); 
+        return false; 
+    }
+
+    // 复制到最终路径
     FILE* tmp_f = fopen(TMP_ZIP, "rb");
     FILE* dest_f = fopen(dest_path.c_str(), "wb");
     if (!tmp_f || !dest_f) {
         if (tmp_f) fclose(tmp_f);
         if (dest_f) fclose(dest_f);
         remove(TMP_ZIP);
+        log("❌ Failed to write final backup file");
         return false;
     }
 
@@ -144,10 +192,18 @@ static bool compress_folder(const std::string& src_path, const std::string& dest
     fclose(tmp_f);
     fclose(dest_f);
     remove(TMP_ZIP);
+
+    // 校验文件是否真的生成
+    if (!std::filesystem::exists(dest_path) || std::filesystem::file_size(dest_path) <= 0) {
+        log("❌ Backup file not generated: " + dest_path);
+        remove(dest_path.c_str());
+        return false;
+    }
+
     return true;
 }
 
-// ===================== Backup Task =====================
+// ===================== 备份全流程 =====================
 static void do_backup() {
     {
         std::lock_guard<std::mutex> lock(g_state_mutex);
@@ -157,73 +213,153 @@ static void do_backup() {
         g_backup_state.recent_logs.clear();
     }
 
-    log("Backup started.");
+    log("==================== Backup Start ====================");
+    log("📂 Target backup directory: " + std::string(ROOT_DIR));
 
+    // 【关键】第一步就强制创建文件夹，并且检查结果
+    bool dir_created = ensure_backup_dir();
+    if (!dir_created) {
+        log("❌ FAILED to create backup directory!");
+        log("💡 Please enable 'Manage all files' permission for the game in system settings!");
+        std::lock_guard<std::mutex> lock(g_state_mutex);
+        g_backup_state.is_backing_up = false;
+        g_backup_state.current_status = "No Permission";
+        g_backup_state.last_result = BackupState::FAILED;
+        log("==================== Backup Aborted ====================");
+        return;
+    }
+    log("✅ Backup directory created/verified successfully");
+
+    // 游戏目录&权限检查
     try {
         if (!std::filesystem::exists(BASE_DIR)) {
-            log("Game directory not found.");
-            throw std::runtime_error("dir missing");
+            log("❌ Game directory not found! Path: " + std::string(BASE_DIR));
+            log("💡 Tip: Please enter the game world first, then try backup again.");
+            throw std::runtime_error("game dir missing");
         }
-        std::filesystem::create_directories(ROOT_DIR);
-        FILE* test = fopen((std::string(ROOT_DIR) + "/test.tmp").c_str(), "wb");
-        if (!test) { log("Storage permission denied."); throw std::runtime_error("permission"); }
-        fclose(test); remove((std::string(ROOT_DIR) + "/test.tmp").c_str());
+        log("✅ Game directory found: " + std::string(BASE_DIR));
+
+        // 测试备份目录可写
+        FILE* test = fopen((std::string(ROOT_DIR) + "/write_test.tmp").c_str(), "wb");
+        if (!test) { 
+            log("❌ Storage permission denied! Cannot write to backup directory.");
+            log("💡 Please enable 'Manage all files' permission in system settings!");
+            throw std::runtime_error("permission denied"); 
+        }
+        fclose(test); 
+        remove((std::string(ROOT_DIR) + "/write_test.tmp").c_str());
+        log("✅ Write permission check passed");
+
     } catch (...) {
         std::lock_guard<std::mutex> lock(g_state_mutex);
         g_backup_state.is_backing_up = false;
-        g_backup_state.current_status = "Init failed";
+        g_backup_state.current_status = "Init Failed";
         g_backup_state.last_result = BackupState::FAILED;
+        log("==================== Backup Aborted ====================");
         return;
     }
 
+    // 1. 打包资源/行为/皮肤包
     std::string addon_path = std::string(ROOT_DIR) + "/Backup_Packs.mcaddon";
+    log("📦 Start packing resource/behavior/skin packs...");
+    log("Addon save path: " + addon_path);
+
     int err = 0;
     zip_t* main_zip = zip_open(addon_path.c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err);
+    int packed_pack_count = 0;
     if (main_zip) {
         const char* dirs[] = {DIRS_RESOURCE, DIRS_BEHAVIOR, DIRS_SKIN};
-        for (auto dir : dirs) {
-            std::string full = std::string(BASE_DIR) + dir;
-            if (!std::filesystem::exists(full)) continue;
-            for (auto& entry : std::filesystem::directory_iterator(full)) {
-                if (!entry.is_directory()) continue;
-                std::string name = entry.path().filename().string();
-                compress_folder(entry.path().string(), TMP_ZIP);
-
-                FILE* f = fopen(TMP_ZIP, "rb");
-                if (!f) continue;
-                fseek(f, 0, SEEK_END);
-                long sz = ftell(f);
-                fseek(f, 0, SEEK_SET);
-                zip_source_t* s = zip_source_filep(main_zip, f, 0, sz);
-                if (s) zip_file_add(main_zip, (name + ".mcpack").c_str(), s, ZIP_FL_OVERWRITE);
-                remove(TMP_ZIP);
-                log("Packed: " + name);
+        const char* dir_names[] = {"resource_packs", "behavior_packs", "skin_packs"};
+        
+        for (int i = 0; i < 3; i++) {
+            std::string full_dir = std::string(BASE_DIR) + dirs[i];
+            if (!std::filesystem::exists(full_dir)) {
+                log("⚠️ Skip directory not found: " + std::string(dir_names[i]));
+                continue;
             }
+
+            int pack_count = 0;
+            for (auto& entry : std::filesystem::directory_iterator(full_dir)) {
+                if (!entry.is_directory()) continue;
+                std::string pack_name = entry.path().filename().string();
+                log("Packing: " + pack_name + ".mcpack");
+
+                if (compress_folder(entry.path().string(), TMP_ZIP)) {
+                    FILE* f = fopen(TMP_ZIP, "rb");
+                    if (f) {
+                        fseek(f, 0, SEEK_END);
+                        long sz = ftell(f);
+                        fseek(f, 0, SEEK_SET);
+                        zip_source_t* s = zip_source_filep(main_zip, f, 0, sz);
+                        if (s) {
+                            zip_file_add(main_zip, (pack_name + ".mcpack").c_str(), s, ZIP_FL_OVERWRITE);
+                            pack_count++;
+                            packed_pack_count++;
+                        }
+                    }
+                }
+                remove(TMP_ZIP);
+            }
+            log("✅ " + std::string(dir_names[i]) + " packed: " + std::to_string(pack_count) + " packs");
         }
         zip_close(main_zip);
+
+        if (packed_pack_count > 0 && std::filesystem::exists(addon_path) && std::filesystem::file_size(addon_path) > 0) {
+            log("✅ Packs backup completed: " + addon_path);
+        } else {
+            remove(addon_path.c_str());
+            log("⚠️ No packs found, skip addon backup");
+        }
+    } else {
+        log("⚠️ Failed to create addon file, skip packs backup");
     }
 
+    // 2. 导出地图
+    log("🌍 Start exporting worlds...");
     std::string world_root = std::string(BASE_DIR) + DIRS_WORLD;
+    int success_world_count = 0;
+    int total_world_count = 0;
+
     if (std::filesystem::exists(world_root)) {
         for (auto& entry : std::filesystem::directory_iterator(world_root)) {
             if (!entry.is_directory()) continue;
-            std::string name = entry.path().filename().string();
-            std::string dst = std::string(ROOT_DIR) + "/" + name + ".mcworld";
-            compress_folder(entry.path().string(), dst);
-            log("World saved: " + name);
+            total_world_count++;
+            std::string world_id = entry.path().filename().string();
+            std::string dest_path = std::string(ROOT_DIR) + "/" + world_id + ".mcworld";
+
+            log("Exporting world: " + world_id);
+            {
+                std::lock_guard<std::mutex> lock(g_state_mutex);
+                g_backup_state.current_status = "Exporting: " + world_id;
+            }
+
+            if (compress_folder(entry.path().string(), dest_path)) {
+                long file_size_kb = std::filesystem::file_size(dest_path) / 1024;
+                log("✅ World saved: " + world_id + " (" + std::to_string(file_size_kb) + " KB)");
+                success_world_count++;
+            } else {
+                log("❌ Failed to save world: " + world_id);
+            }
         }
+    } else {
+        log("⚠️ Worlds directory not found, skip world backup");
     }
+
+    // 备份完成总结
+    log("==================== Backup Completed ====================");
+    log("📊 Total worlds: " + std::to_string(total_world_count) + " | Success: " + std::to_string(success_world_count));
+    log("📊 Total packs: " + std::to_string(packed_pack_count));
+    log("📂 All files saved to: " + std::string(ROOT_DIR));
 
     {
         std::lock_guard<std::mutex> lock(g_state_mutex);
         g_backup_state.is_backing_up = false;
-        g_backup_state.current_status = "Backup completed";
-        g_backup_state.last_result = BackupState::SUCCESS;
+        g_backup_state.current_status = "Backup Completed";
+        g_backup_state.last_result = (success_world_count > 0 || packed_pack_count > 0) ? BackupState::SUCCESS : BackupState::FAILED;
     }
-    log("All done.");
 }
 
-// ===================== 强制黄绿色样式（每次都刷）=====================
+// ===================== 强制黄绿色样式 =====================
 static void ForceStyle() {
     ImGuiStyle& s = ImGui::GetStyle();
     ImVec4* c = s.Colors;
@@ -260,8 +396,7 @@ static void ForceStyle() {
 
 // ===================== UI =====================
 static void DrawUI() {
-    ForceStyle(); // 每次画UI都强制刷颜色
-
+    ForceStyle();
     if (g_UIFont) ImGui::PushFont(g_UIFont);
 
     ImGuiIO& io = ImGui::GetIO();
@@ -296,9 +431,9 @@ static void DrawUI() {
     if (st.is_backing_up)
         ImGui::TextColored(ImVec4(0.8f,0.6f,0,1), "%s", st.current_status.c_str());
     else if (st.last_result == BackupState::SUCCESS)
-        ImGui::TextColored(ImVec4(0.2f,0.7f,0.2f,1), "Completed");
+        ImGui::TextColored(ImVec4(0.2f,0.7f,0.2f,1), "Backup Completed");
     else if (st.last_result == BackupState::FAILED)
-        ImGui::TextColored(ImVec4(0.9f,0.2f,0.2f,1), "Failed");
+        ImGui::TextColored(ImVec4(0.9f,0.2f,0.2f,1), "Backup Failed");
     else
         ImGui::Text("Ready");
 
@@ -389,9 +524,7 @@ static void Setup() {
 
 static void Render() {
     if (!g_Initialized) return;
-
-    GLState s;
-    SaveGL(s);
+    GLState s; SaveGL(s);
 
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2((float)g_Width, (float)g_Height);
@@ -400,9 +533,7 @@ static void Render() {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplAndroid_NewFrame(g_Width, g_Height);
     ImGui::NewFrame();
-
-    DrawUI(); // 里面自带强制刷颜色
-
+    DrawUI();
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
