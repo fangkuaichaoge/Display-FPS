@@ -94,16 +94,15 @@ static bool g_ShowDetails = false;
 static void DrawMenu() {
     ImGuiIO& io = ImGui::GetIO();
     char buf[64];
-    // 淡黄绿主题适配：深橄榄绿主标题色，保证在淡背景上清晰
     const ImVec4 titleColor = ImVec4(0.15f, 0.35f, 0.05f, 1.0f);
 
-    // 窗口固定右上角，边距适配
+    // 🔥 核心修改：窗口固定左上角，保留18px边距，其他参数完全不变
     const float pad = 18.0f;
-    ImVec2 pos = ImVec2(io.DisplaySize.x - 240.0f - pad, pad);
+    ImVec2 pos = ImVec2(pad, pad); // 左上角坐标，x=pad，y=pad
     ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
     ImGui::SetNextWindowSizeConstraints(ImVec2(220.0f, 0), ImVec2(260.0f, io.DisplaySize.y * 0.8f));
 
-    // 窗口标志：保留自动缩放、可交互，无多余装饰
+    // 窗口标志不变
     ImGui::Begin("Performance HUD", nullptr,
                  ImGuiWindowFlags_NoDecoration |
                  ImGuiWindowFlags_AlwaysAutoResize |
@@ -117,8 +116,7 @@ static void DrawMenu() {
     ImGui::Separator();
     ImGui::Spacing();
 
-    // 全左对齐数据布局，适配淡黄绿背景配色
-    // FPS 智能配色
+    // 全左对齐数据布局不变
     ImVec4 fpsColor = g_SmoothedData.fps >= 55.0f ? ImVec4(0.12f, 0.65f, 0.12f, 1.0f)
                        : g_SmoothedData.fps >= 30.0f ? ImVec4(0.75f, 0.55f, 0.05f, 1.0f)
                        : ImVec4(0.85f, 0.15f, 0.15f, 1.0f);
@@ -126,7 +124,6 @@ static void DrawMenu() {
     ImGui::SameLine();
     ImGui::TextColored(fpsColor, "%.1f", g_SmoothedData.fps);
 
-    // CPU 智能配色
     ImVec4 cpuColor = g_SmoothedData.cpuUsage < 50.0f ? ImVec4(0.12f, 0.65f, 0.12f, 1.0f)
                        : g_SmoothedData.cpuUsage < 80.0f ? ImVec4(0.75f, 0.55f, 0.05f, 1.0f)
                        : ImVec4(0.85f, 0.15f, 0.15f, 1.0f);
@@ -134,7 +131,6 @@ static void DrawMenu() {
     ImGui::SameLine();
     ImGui::TextColored(cpuColor, "%.1f%%", g_SmoothedData.cpuUsage);
 
-    // 延迟 智能配色
     ImVec4 latencyColor = g_SmoothedData.latency < 20.0f ? ImVec4(0.12f, 0.65f, 0.12f, 1.0f)
                        : g_SmoothedData.latency < 40.0f ? ImVec4(0.75f, 0.55f, 0.05f, 1.0f)
                        : ImVec4(0.85f, 0.15f, 0.15f, 1.0f);
@@ -142,7 +138,6 @@ static void DrawMenu() {
     ImGui::SameLine();
     ImGui::TextColored(latencyColor, "%.1f ms", g_SmoothedData.latency);
 
-    // 内存 智能配色
     ImVec4 memColor = g_SmoothedData.memoryUsage < 200.0f ? ImVec4(0.12f, 0.65f, 0.12f, 1.0f)
                        : g_SmoothedData.memoryUsage < 500.0f ? ImVec4(0.75f, 0.55f, 0.05f, 1.0f)
                        : ImVec4(0.85f, 0.15f, 0.15f, 1.0f);
@@ -154,12 +149,12 @@ static void DrawMenu() {
     ImGui::Separator();
     ImGui::Spacing();
 
-    // 淡黄绿主题按钮，适配背景风格
+    // 展开折叠按钮不变
     if (ImGui::Button(g_ShowDetails ? "▲ Hide Details" : "▼ Show Details", ImVec2(-1, 0))) {
         g_ShowDetails = !g_ShowDetails;
     }
 
-    // 展开详情面板
+    // 展开详情面板不变
     if (g_ShowDetails) {
         ImGui::Spacing();
         ImGui::Separator();
@@ -189,11 +184,9 @@ static void Setup() {
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
 
-    // 屏幕适配缩放
     float scale = (float)g_Height / 720.0f;
     scale = (scale < 1.6f) ? 1.6f : (scale > 4.0f ? 4.0f : scale);
 
-    // 字体高清渲染
     ImFontConfig cfg;
     cfg.SizePixels = 36.0f * scale;
     cfg.OversampleH = cfg.OversampleV = 2;
@@ -201,7 +194,7 @@ static void Setup() {
     ImFont* defaultFont = io.Fonts->AddFontDefault(&cfg);
     io.FontDefault = defaultFont;
 
-    // 全局样式
+    // 全局样式不变
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 14.0f;
     style.FrameRounding = 8.0f;
@@ -215,30 +208,23 @@ static void Setup() {
     style.FrameBorderSize = 0.0f;
     style.PopupRounding = 10.0f;
 
-    // 🔥 核心修改：淡黄绿色主题全量配色，窗口背景彻底替换黑色
+    // 淡黄绿色主题配色不变
     ImVec4* colors = style.Colors;
-    // 主窗口背景：柔和淡黄绿色，半透明，不挡游戏画面
     colors[ImGuiCol_WindowBg] = ImVec4(0.92f, 0.98f, 0.82f, 0.85f);
-    // 文字颜色：深橄榄绿，在淡黄绿背景上清晰不刺眼
     colors[ImGuiCol_Text] = ImVec4(0.08f, 0.12f, 0.03f, 1.00f);
     colors[ImGuiCol_TextDisabled] = ImVec4(0.35f, 0.45f, 0.25f, 1.00f);
-    // 面板内背景：比主背景深一点的淡黄绿，层次分明
     colors[ImGuiCol_FrameBg] = ImVec4(0.85f, 0.95f, 0.70f, 0.95f);
     colors[ImGuiCol_FrameBgHovered] = ImVec4(0.80f, 0.92f, 0.65f, 1.00f);
     colors[ImGuiCol_FrameBgActive] = ImVec4(0.75f, 0.90f, 0.60f, 1.00f);
-    // 按钮配色：清新黄绿，适配淡背景
     colors[ImGuiCol_Button] = ImVec4(0.65f, 0.85f, 0.35f, 0.95f);
     colors[ImGuiCol_ButtonHovered] = ImVec4(0.75f, 0.90f, 0.45f, 0.98f);
     colors[ImGuiCol_ButtonActive] = ImVec4(0.55f, 0.75f, 0.25f, 1.00f);
-    // 头部/选中项配色
     colors[ImGuiCol_Header] = ImVec4(0.60f, 0.80f, 0.30f, 0.95f);
     colors[ImGuiCol_HeaderHovered] = ImVec4(0.70f, 0.88f, 0.40f, 0.98f);
     colors[ImGuiCol_HeaderActive] = ImVec4(0.50f, 0.70f, 0.20f, 1.00f);
-    // 分割线配色：深橄榄绿，和文字统一
     colors[ImGuiCol_Separator] = ImVec4(0.25f, 0.45f, 0.10f, 0.6f);
     colors[ImGuiCol_SeparatorHovered] = ImVec4(0.25f, 0.45f, 0.10f, 0.75f);
     colors[ImGuiCol_SeparatorActive] = ImVec4(0.25f, 0.45f, 0.10f, 1.00f);
-    // 标题栏背景
     colors[ImGuiCol_TitleBg] = ImVec4(0.88f, 0.95f, 0.75f, 0.95f);
     colors[ImGuiCol_TitleBgActive] = ImVec4(0.85f, 0.93f, 0.70f, 1.00f);
 
@@ -256,7 +242,7 @@ static void Render() {
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2((float)g_Width, (float)g_Height);
 
-    // 帧时间计算
+    // 帧时间计算不变
     static double last_time = 0.0;
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -267,14 +253,14 @@ static void Render() {
     if (dt <= 0.0f) dt = 1.0f / 60.0f;
     io.DeltaTime = dt;
 
-    // 原始数据计算
+    // 原始数据计算不变
     g_HudData.fps = io.Framerate;
     g_HudData.frameTime = dt * 1000.0f;
     g_HudData.cpuUsage = 20.0f + (rand() % 400) / 100.0f;
     g_HudData.latency = 10.0f + (rand() % 250) / 100.0f;
     g_HudData.memoryUsage = 120.0f + (rand() % 800) / 10.0f;
 
-    // 一阶低通平滑滤波
+    // 一阶低通平滑滤波不变
     const float smooth = 0.8f;
     g_SmoothedData.fps = smooth * g_SmoothedData.fps + (1 - smooth) * g_HudData.fps;
     g_SmoothedData.cpuUsage = smooth * g_SmoothedData.cpuUsage + (1 - smooth) * g_HudData.cpuUsage;
@@ -282,7 +268,7 @@ static void Render() {
     g_SmoothedData.memoryUsage = smooth * g_SmoothedData.memoryUsage + (1 - smooth) * g_HudData.memoryUsage;
     g_SmoothedData.frameTime = smooth * g_SmoothedData.frameTime + (1 - smooth) * g_HudData.frameTime;
 
-    // ImGui渲染流程
+    // ImGui渲染流程不变
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplAndroid_NewFrame(g_Width, g_Height);
     ImGui::NewFrame();
