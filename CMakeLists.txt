@@ -47,11 +47,12 @@ if(NOT preloader_android_POPULATED)
 endif()
 target_link_libraries(preloader PUBLIC fmt::fmt)
 
-# ===================== 3. 修复版libzip（彻底解决头文件+链接问题） =====================
+# ===================== 3. 修复版libzip（Git拉取，彻底解决哈希问题） =====================
 FetchContent_Declare(
     libzip
-    URL https://github.com/nih-at/libzip/releases/download/v1.10.1/libzip-1.10.1.tar.gz
-    URL_HASH SHA256=6d9ad41db78189854dab8e298918a774998911c98b52b3734130094a4344995
+    GIT_REPOSITORY https://github.com/nih-at/libzip.git
+    GIT_TAG v1.10.1
+    GIT_SHALLOW ON
 )
 
 # 核心配置：关闭所有不需要的功能，只保留基础zip打包，适配安卓交叉编译
@@ -99,17 +100,17 @@ set(SOURCES
 # 生成最终的so库
 add_library(MCbackup SHARED ${SOURCES})
 
-# 核心修复：链接目标名改为zip，同时添加zlib依赖
+# 链接所有依赖库
 target_link_libraries(MCbackup
     preloader
     fmt::fmt
-    zip       # 修复：libzip源码编译的目标名是zip，不是zip::zip
+    zip
     log
     android
     EGL
     GLESv3
     GLESv2
-    z         # NDK自带的zlib，libzip核心依赖
+    z
 )
 
 # 强制输出编译产物到output目录，方便提取
