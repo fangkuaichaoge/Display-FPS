@@ -90,38 +90,47 @@ struct HudData {
 static HudData g_HudData = {0};
 static HudData g_SmoothedData = {0};
 static bool g_ShowDetails = false;
+// 窗口名常量，避免拼写错误
+static const char* WINDOW_NAME = "Performance HUD";
 
 static void DrawMenu() {
     ImGuiIO& io = ImGui::GetIO();
     char buf[64];
     const ImVec4 titleColor = ImVec4(0.15f, 0.35f, 0.05f, 1.0f);
 
-    // 🔥 核心修改1：仅第一次启动时固定左上角，之后不再强制复位，允许拖动
+    // 仅第一次启动时固定左上角，之后不再强制复位
     const float pad = 18.0f;
     ImVec2 defaultPos = ImVec2(pad, pad);
-    ImGui::SetNextWindowPos(defaultPos, ImGuiCond_Once); // 从Always改成Once，仅第一次生效
+    ImGui::SetNextWindowPos(defaultPos, ImGuiCond_Once);
     ImGui::SetNextWindowSizeConstraints(ImVec2(220.0f, 0), ImVec2(260.0f, io.DisplaySize.y * 0.8f));
 
-    // 🔥 核心修改2：删掉了ImGuiWindowFlags_NoMove，解除拖动禁止
-    ImGui::Begin("Performance HUD", nullptr,
+    // 移除NoMove标志，允许拖动
+    ImGui::Begin(WINDOW_NAME, nullptr,
                  ImGuiWindowFlags_NoDecoration |
                  ImGuiWindowFlags_AlwaysAutoResize |
                  ImGuiWindowFlags_NoSavedSettings |
                  ImGuiWindowFlags_NoFocusOnAppearing);
 
-    // 🔥 新增：顶部标题可拖动区域（无标题栏窗口的拖动适配）
-    // 拖动标题区域就能移动窗口，不会误触下方的按钮和数据
+    // 🔥 修复：全公开API实现拖动，无内部函数，兼容所有版本
+    // 1. 绘制标题
     ImVec2 titleSize = ImGui::CalcTextSize("☘︎  Matcha HUD");
     ImGui::SetCursorPosX((ImGui::GetWindowWidth() - titleSize.x) * 0.5f);
     ImGui::TextColored(titleColor, "☘︎  Matcha HUD");
     
-    // 给标题区域添加可拖动交互
+    // 2. 给标题添加可拖动的隐形按钮（点击标题就能拖动窗口）
     ImVec2 titleMin = ImGui::GetItemRectMin();
     ImVec2 titleMax = ImGui::GetItemRectMax();
     ImGui::SetCursorScreenPos(titleMin);
     ImGui::InvisibleButton("##drag_zone", ImVec2(titleMax.x - titleMin.x, titleMax.y - titleMin.y));
+    
+    // 3. 拖动逻辑（完全用公开API，无内部函数）
     if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0)) {
-        ImGui::SetWindowPos(ImGui::GetCurrentWindow(), ImGui::GetMousePos() - ImGui::GetMouseDragDelta(0));
+        ImVec2 mousePos = ImGui::GetMousePos();
+        ImVec2 dragDelta = ImGui::GetMouseDragDelta(0);
+        // 手动计算坐标，避免ImVec2减法兼容问题
+        ImVec2 newWindowPos = ImVec2(mousePos.x - dragDelta.x, mousePos.y - dragDelta.y);
+        // 用窗口名设置位置，公开API，无需获取窗口指针
+        ImGui::SetWindowPos(WINDOW_NAME, newWindowPos);
     }
 
     ImGui::Separator();
@@ -160,7 +169,7 @@ static void DrawMenu() {
     ImGui::Separator();
     ImGui::Spacing();
 
-    // 展开折叠按钮（完全保留，点击功能正常）
+    // 展开折叠按钮（功能完全保留）
     if (ImGui::Button(g_ShowDetails ? "▲ Hide Details" : "▼ Show Details", ImVec2(-1, 0))) {
         g_ShowDetails = !g_ShowDetails;
     }
@@ -205,7 +214,7 @@ static void Setup() {
     ImFont* defaultFont = io.Fonts->AddFontDefault(&cfg);
     io.FontDefault = defaultFont;
 
-    // 全局样式&淡黄绿主题（完全保留）
+    // 淡黄绿主题样式完全保留
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 14.0f;
     style.FrameRounding = 8.0f;
@@ -252,7 +261,7 @@ static void Render() {
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2((float)g_Width, (float)g_Height);
 
-    // 帧时间计算（完全保留）
+    // 帧时间计算完全保留
     static double last_time = 0.0;
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -263,7 +272,7 @@ static void Render() {
     if (dt <= 0.0f) dt = 1.0f / 60.0f;
     io.DeltaTime = dt;
 
-    // 原始数据计算&平滑滤波（完全保留）
+    // 原始数据计算&平滑滤波完全保留
     g_HudData.fps = io.Framerate;
     g_HudData.frameTime = dt * 1000.0f;
     g_HudData.cpuUsage = 20.0f + (rand() % 400) / 100.0f;
