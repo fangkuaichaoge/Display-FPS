@@ -27,7 +27,14 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
         cmake --build build -j$(nproc)
         
+    - name: Check output
+      run: |
+        echo "=== 检查构建输出 ==="
+        find build -name "*.so" -type f
+        ls -la build/output/ 2>/dev/null || echo "output目录不存在"
+        
     - uses: actions/upload-artifact@v4
       with:
         name: libMCbackup
-        path: build/libMCbackup.so
+        path: build/output/libMCbackup.so
+        if-no-files-found: error
