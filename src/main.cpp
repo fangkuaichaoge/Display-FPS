@@ -285,12 +285,12 @@ static void Render() {
 
     // 一阶低通平滑滤波
     const float smooth = 0.8f;
-    g_SmoothedData.fps = smooth * g_SmoothedData.fps + (1.0f - smooth) * g_HudData.fps;
-    g_SmoothedData.cps = smooth * g_SmoothedData.cps + (1.0f - smooth) * g_HudData.cps;
-    g_SmoothedData.cpuUsage = smooth * g_SmoothedData.cpuUsage + (1.0f - smooth) * g_HudData.cpuUsage;
-    g_SmoothedData.latency = smooth * g_SmoothedData.latency + (1.0f - smooth) * g_HudData.latency;
-    g_SmoothedData.memoryUsage = smooth * g_SmoothedData.memoryUsage + (1.0f - smooth) * g_HudData.memoryUsage;
-    g_SmoothedData.frameTime = smooth * g_SmoothedData.frameTime + (1.0f - smooth) * g_HudData.frameTime;
+    g_SmoothedData.fps = smooth * g_SmoothedData.fps + (1 - smooth) * g_HudData.fps;
+    g_SmoothedData.cps = smooth * g_SmoothedData.cps + (1 - smooth) * g_HudData.cps;
+    g_SmoothedData.cpuUsage = smooth * g_SmoothedData.cpuUsage + (1 - smooth) * g_HudData.cpuUsage;
+    g_SmoothedData.latency = smooth * g_SmoothedData.latency + (1 - smooth) * g_HudData.latency;
+    g_SmoothedData.memoryUsage = smooth * g_SmoothedData.memoryUsage + (1 - smooth) * g_HudData.memoryUsage;
+    g_SmoothedData.frameTime = smooth * g_SmoothedData.frameTime + (1 - smooth) * g_HudData.frameTime;
 
     // ImGui渲染流程
     ImGui_ImplOpenGL3_NewFrame();
@@ -348,7 +348,8 @@ static void* MainThread(void*) {
     GlossInit(true);
     GHandle hEGL = GlossOpen("libEGL.so");
     if (!hEGL) return nullptr;
-    void* swap = GlossSymbol(hEGL, "eglSwapBuffers", nullptr);
+    // 🔥 唯一修复的地方：加了(void*)强制类型转换，解决uintptr_t转void*的报错
+    void* swap = (void*)GlossSymbol(hEGL, "eglSwapBuffers", nullptr);
     if (!swap) return nullptr;
     GHook h = GlossHook(swap, (void*)hook_eglSwapBuffers, (void**)&orig_eglSwapBuffers);
     if (!h) return nullptr;
