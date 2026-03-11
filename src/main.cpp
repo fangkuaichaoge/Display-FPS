@@ -27,9 +27,9 @@
 #include "ImGui/backends/imgui_impl_android.h"
 
 // ===================== Path Config (World Only Backup) =====================
-#define GAME_BASE_DIR   "/storage/emulated/0/Android/data/com.stardust.mclauncher/files/games/com.mojang/"
+#define GAME_BASE_DIR   "/storage/emulated/0/你的MC文件夹"
 #define BACKUP_DIR      "/storage/emulated/0/MCBackup"
-#define TEMP_DIR        "/storage/emulated/0/Android/data/com.stardust.mclauncher/cache/"
+#define TEMP_DIR        "/storage/emulated/0/这个是缓存文件夹/cache/"
 #define WORLD_FOLDER    "minecraftWorlds"
 #define MAX_LOG_COUNT   30
 #define READ_CHUNK_SIZE 8192
