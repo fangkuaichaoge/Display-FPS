@@ -113,7 +113,23 @@ target_link_libraries(MCbackup
     z
 )
 
-# 强制输出编译产物到output目录，方便提取
+# ===================== 输出目录配置（修复GitHub Actions产物路径问题） =====================
+
+# 强制设置所有构建类型的输出目录到统一的 output 文件夹
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/output)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}/output)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/output)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_BINARY_DIR}/output)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_MINSIZEREL ${CMAKE_BINARY_DIR}/output)
+
 set_target_properties(MCbackup PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/output
+    LIBRARY_OUTPUT_NAME MCbackup
+)
+
+# 构建完成后自动复制到 output 目录（保险措施）
+add_custom_command(TARGET MCbackup POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/output
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:MCbackup> ${CMAKE_BINARY_DIR}/output/
+    COMMENT "Copying library to output directory"
 )
