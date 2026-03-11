@@ -45,17 +45,16 @@ struct BackupState {
 static BackupState g_backup_state;
 static std::mutex g_state_mutex;
 
-// ===================== 全局基础运行状态 =====================
-static bool g_ImGui_Initialized = false;
-static int g_Screen_Width = 0, g_Screen_Height = 0;
-static EGLContext g_Target_Context = EGL_NO_CONTEXT;
-static EGLSurface g_Target_Surface = EGL_NO_SURFACE;
+// ===================== ImGui渲染核心全局状态（完全参考可正常渲染的代码） =====================
+static bool g_Initialized = false;
+static int g_Width = 0, g_Height = 0;
+static EGLContext g_TargetContext = EGL_NO_CONTEXT;
+static EGLSurface g_TargetSurface = EGL_NO_SURFACE;
 
 // ===================== Hook函数指针声明 =====================
 static EGLBoolean (*orig_eglSwapBuffers)(EGLDisplay, EGLSurface) = nullptr;
 static void (*orig_Input1)(void*, void*, void*) = nullptr;
 static int32_t (*orig_Input2)(void*, void*, bool, long, uint32_t*, AInputEvent**) = nullptr;
-static const char* MAIN_WINDOW_NAME = "MC一键备份工具";
 
 // ===================== 日志功能 =====================
 static std::string get_log_path() {
@@ -295,12 +294,15 @@ static void DrawUI() {
     const ImVec4 failedColor = ImVec4(0.85f, 0.15f, 0.15f, 1.0f);
     const ImVec4 warningColor = ImVec4(0.75f, 0.55f, 0.05f, 1.0f);
 
-    // 窗口基础设置：默认左上角，可拖动
+    // 窗口基础设置：完全参考可正常渲染的代码逻辑，限制尺寸避免超出屏幕
     const float pad = 18.0f;
-    ImGui::SetNextWindowPos(ImVec2(pad, pad), ImGuiCond_Once);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(360.0f, 0), ImVec2(450.0f, io.DisplaySize.y * 0.8f));
+    ImGui::SetNextWindowPos(ImVec2(pad, pad), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(
+        ImVec2(360.0f, 0), 
+        ImVec2(io.DisplaySize.x * 0.9f, io.DisplaySize.y * 0.8f)
+    );
 
-    ImGui::Begin(MAIN_WINDOW_NAME, nullptr,
+    ImGui::Begin("MC一键备份工具", nullptr,
                  ImGuiWindowFlags_NoDecoration |
                  ImGuiWindowFlags_AlwaysAutoResize |
                  ImGuiWindowFlags_NoSavedSettings |
@@ -318,11 +320,10 @@ static void DrawUI() {
     if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0)) {
         ImVec2 mousePos = ImGui::GetMousePos();
         ImVec2 dragDelta = ImGui::GetMouseDragDelta(0);
-        ImGui::SetWindowPos(MAIN_WINDOW_NAME, ImVec2(mousePos.x - dragDelta.x, mousePos.y - dragDelta.y));
+        ImGui::SetWindowPos("MC一键备份工具", ImVec2(mousePos.x - dragDelta.x, mousePos.y - dragDelta.y));
     }
 
     ImGui::Separator();
-    // 修复：自定义间距用Dummy，替换原来的Spacing(10)
     ImGui::Dummy(ImVec2(0, 10));
 
     // 线程安全读取状态
@@ -340,7 +341,6 @@ static void DrawUI() {
         }
     }
 
-    // 修复：替换Spacing(8)
     ImGui::Dummy(ImVec2(0, 8));
 
     // 状态显示
@@ -356,10 +356,8 @@ static void DrawUI() {
         ImGui::Text("等待执行备份");
     }
 
-    // 修复：替换Spacing(8)
     ImGui::Dummy(ImVec2(0, 8));
     ImGui::Separator();
-    // 修复：替换Spacing(8)
     ImGui::Dummy(ImVec2(0, 8));
 
     // 日志预览区域
@@ -378,7 +376,7 @@ static void DrawUI() {
     ImGui::End();
 }
 
-// ===================== GL状态保护（避免游戏花屏） =====================
+// ===================== GL状态保护（完全参考可正常渲染的代码，修复安卓GLES混合异常） =====================
 struct GLState {
     GLint prog, tex, aTex, aBuf, eBuf, vao, fbo, vp[4], sc[4], bSrc, bDst;
     GLboolean blend, cull, depth, scissor;
@@ -394,8 +392,9 @@ static void SaveGL(GLState& s) {
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &s.fbo);
     glGetIntegerv(GL_VIEWPORT, s.vp);
     glGetIntegerv(GL_SCISSOR_BOX, s.sc);
-    glGetIntegerv(GL_BLEND_SRC_RGB, &s.bSrc);
-    glGetIntegerv(GL_BLEND_DST_RGB, &s.bDst);
+    // 【关键修复】安卓GLES必须用ALPHA通道的混合参数，之前的RGB参数会导致UI透明异常、看不到
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &s.bSrc);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &s.bDst);
     s.blend = glIsEnabled(GL_BLEND);
     s.cull = glIsEnabled(GL_CULL_FACE);
     s.depth = glIsEnabled(GL_DEPTH_TEST);
@@ -419,148 +418,133 @@ static void RestoreGL(const GLState& s) {
     s.scissor ? glEnable(GL_SCISSOR_TEST) : glDisable(GL_SCISSOR_TEST);
 }
 
-// ===================== ImGui环境初始化 =====================
-static void SetupImGui() {
-    if (g_ImGui_Initialized || g_Screen_Width <= 0 || g_Screen_Height <= 0) return;
+// ===================== ImGui环境初始化（完全参考可正常渲染的代码） =====================
+static void Setup() {
+    // 只有宽高有效时才初始化，避免无效初始化
+    if (g_Initialized || g_Width <= 0 || g_Height <= 0) return;
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
 
-    // 屏幕自动缩放适配
-    float scale = (float)g_Screen_Height / 720.0f;
-    scale = (scale < 1.6f) ? 1.6f : (scale > 4.0f) ? 4.0f : scale;
+    // 屏幕自动缩放适配，和参考代码逻辑完全一致
+    float scale = (float)g_Height / 720.0f;
+    scale = (scale < 1.5f) ? 1.5f : (scale > 4.0f ? 4.0f : scale);
 
     // 字体高清渲染
     ImFontConfig cfg;
-    cfg.SizePixels = 36.0f * scale;
-    cfg.OversampleH = cfg.OversampleV = 2;
-    cfg.PixelSnapH = true;
+    cfg.SizePixels = 32.0f * scale;
     io.Fonts->AddFontDefault(&cfg);
 
-    // 淡黄绿主题样式
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.WindowRounding = 14.0f;
-    style.FrameRounding = 8.0f;
-    style.GrabRounding = 8.0f;
-    style.ButtonTextAlign = ImVec2(0.5f, 0.5f);
-    style.WindowPadding = ImVec2(14, 14);
-    style.FramePadding = ImVec2(10, 8);
-    style.ItemSpacing = ImVec2(8, 10);
-    style.ItemInnerSpacing = ImVec2(6, 6);
-    style.WindowBorderSize = 0.0f;
-    style.FrameBorderSize = 0.0f;
-    style.PopupRounding = 10.0f;
-
-    ImVec4* colors = style.Colors;
-    colors[ImGuiCol_WindowBg] = ImVec4(0.92f, 0.98f, 0.82f, 0.85f);
-    colors[ImGuiCol_Text] = ImVec4(0.08f, 0.12f, 0.03f, 1.00f);
-    colors[ImGuiCol_TextDisabled] = ImVec4(0.35f, 0.45f, 0.25f, 1.00f);
-    colors[ImGuiCol_FrameBg] = ImVec4(0.85f, 0.95f, 0.70f, 0.95f);
-    colors[ImGuiCol_FrameBgHovered] = ImVec4(0.80f, 0.92f, 0.65f, 1.00f);
-    colors[ImGuiCol_FrameBgActive] = ImVec4(0.75f, 0.90f, 0.60f, 1.00f);
-    colors[ImGuiCol_Button] = ImVec4(0.65f, 0.85f, 0.35f, 0.95f);
-    colors[ImGuiCol_ButtonHovered] = ImVec4(0.75f, 0.90f, 0.45f, 0.98f);
-    colors[ImGuiCol_ButtonActive] = ImVec4(0.55f, 0.75f, 0.25f, 1.00f);
-    colors[ImGuiCol_Header] = ImVec4(0.60f, 0.80f, 0.30f, 0.95f);
-    colors[ImGuiCol_HeaderHovered] = ImVec4(0.70f, 0.88f, 0.40f, 0.98f);
-    colors[ImGuiCol_HeaderActive] = ImVec4(0.50f, 0.70f, 0.20f, 1.00f);
-    colors[ImGuiCol_Separator] = ImVec4(0.25f, 0.45f, 0.10f, 0.6f);
-    colors[ImGuiCol_SeparatorHovered] = ImVec4(0.25f, 0.45f, 0.10f, 0.75f);
-    colors[ImGuiCol_SeparatorActive] = ImVec4(0.25f, 0.45f, 0.10f, 1.00f);
-    colors[ImGuiCol_TitleBg] = ImVec4(0.88f, 0.95f, 0.75f, 0.95f);
-    colors[ImGuiCol_TitleBgActive] = ImVec4(0.85f, 0.93f, 0.70f, 1.00f);
-
-    ImGui_ImplAndroid_Init(nullptr);
+    // 【关键修复】无参初始化安卓后端，之前传nullptr会导致初始化失败
+    ImGui_ImplAndroid_Init();
     ImGui_ImplOpenGL3_Init("#version 300 es");
-    style.ScaleAllSizes(scale);
+    ImGui::GetStyle().ScaleAllSizes(scale);
 
-    g_ImGui_Initialized = true;
+    g_Initialized = true;
 }
 
-// ===================== EGL渲染Hook（每帧绘制UI） =====================
+// ===================== ImGui渲染核心流程（完全参考可正常渲染的代码） =====================
+static void Render() {
+    if (!g_Initialized) return;
+    GLState s;
+    SaveGL(s);
+
+    // 【关键修复】强制设置ImGui显示尺寸，之前的代码漏掉了这个，导致ImGui不知道渲染区域
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2((float)g_Width, (float)g_Height);
+
+    // 【关键修复】安卓后端NewFrame必须传宽高，之前的代码没传，导致渲染异常
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplAndroid_NewFrame(g_Width, g_Height);
+    ImGui::NewFrame();
+
+    DrawUI(); // 绘制备份UI
+
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+    RestoreGL(s);
+}
+
+// ===================== EGL渲染Hook（完全参考可正常渲染的代码，确保只在游戏主窗口渲染） =====================
 static EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surf) {
     if (!orig_eglSwapBuffers) return EGL_FALSE;
+    EGLContext ctx = eglGetCurrentContext();
+    if (ctx == EGL_NO_CONTEXT) return orig_eglSwapBuffers(dpy, surf);
 
     // 获取屏幕宽高
     EGLint w = 0, h = 0;
     eglQuerySurface(dpy, surf, EGL_WIDTH, &w);
     eglQuerySurface(dpy, surf, EGL_HEIGHT, &h);
-    if (w < 400 || h < 400) return orig_eglSwapBuffers(dpy, surf);
+    if (w < 500 || h < 500) return orig_eglSwapBuffers(dpy, surf);
 
-    // 初始化目标渲染上下文
-    if (g_Target_Context == EGL_NO_CONTEXT) {
-        g_Target_Context = eglGetCurrentContext();
-        g_Target_Surface = surf;
+    // 只初始化游戏的主渲染窗口，避免在其他临时表面初始化
+    if (g_TargetContext == EGL_NO_CONTEXT) {
+        EGLint buf = 0;
+        eglQuerySurface(dpy, surf, EGL_RENDER_BUFFER, &buf);
+        if (buf == EGL_BACK_BUFFER) {
+            g_TargetContext = ctx;
+            g_TargetSurface = surf;
+        }
     }
 
     // 只在目标游戏窗口渲染
-    if (eglGetCurrentContext() != g_Target_Context || surf != g_Target_Surface) {
+    if (ctx != g_TargetContext || surf != g_TargetSurface)
         return orig_eglSwapBuffers(dpy, surf);
-    }
 
-    g_Screen_Width = w;
-    g_Screen_Height = h;
-    SetupImGui();
-
-    // 渲染ImGui UI
-    if (g_ImGui_Initialized) {
-        GLState gl_state;
-        SaveGL(gl_state);
-
-        ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplAndroid_NewFrame();
-        ImGui::NewFrame();
-
-        DrawUI(); // 绘制备份UI
-
-        ImGui::Render();
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-        RestoreGL(gl_state);
-    }
+    // 更新宽高，初始化ImGui，执行渲染
+    g_Width = w;
+    g_Height = h;
+    Setup();
+    Render();
 
     return orig_eglSwapBuffers(dpy, surf);
 }
 
-// ===================== 触摸事件Hook（保证UI交互正常） =====================
+// ===================== 触摸事件Hook（完全参考可正常渲染的代码，确保UI可点击交互） =====================
 static void hook_Input1(void* thiz, void* a1, void* a2) {
     if (orig_Input1) orig_Input1(thiz, a1, a2);
-    if (thiz && g_ImGui_Initialized) ImGui_ImplAndroid_HandleInputEvent((AInputEvent*)thiz);
+    if (thiz && g_Initialized) ImGui_ImplAndroid_HandleInputEvent((AInputEvent*)thiz);
 }
 
 static int32_t hook_Input2(void* thiz, void* a1, bool a2, long a3, uint32_t* a4, AInputEvent** event) {
     int32_t result = orig_Input2 ? orig_Input2(thiz, a1, a2, a3, a4, event) : 0;
-    if (event && *event && g_ImGui_Initialized) ImGui_ImplAndroid_HandleInputEvent(*event);
+    if (result == 0 && event && *event && g_Initialized) {
+        ImGui_ImplAndroid_HandleInputEvent(*event);
+    }
     return result;
 }
 
-// ===================== 输入事件Hook挂载 =====================
 static void HookInput() {
+    // 双符号兜底，确保能Hook到触摸事件
     void* sym1 = (void*)GlossSymbol(GlossOpen("libinput.so"),
         "_ZN7android13InputConsumer21initializeMotionEventEPNS_11MotionEventEPKNS_12InputMessageE", nullptr);
-    if (sym1) GlossHook(sym1, (void*)hook_Input1, (void**)&orig_Input1);
-
+    if (sym1) {
+        GlossHook(sym1, (void*)hook_Input1, (void**)&orig_Input1);
+    }
     void* sym2 = (void*)GlossSymbol(GlossOpen("libinput.so"),
-        "_ZN7android13InputConsumer7consumeEPNS_12InputEventEblPjPSA_", nullptr);
-    if (sym2) GlossHook(sym2, (void*)hook_Input2, (void**)&orig_Input2);
+        "_ZN7android13InputConsumer7consumeEPNS_10InputEventEblPjPSA_", nullptr);
+    if (sym2) {
+        GlossHook(sym2, (void*)hook_Input2, (void**)&orig_Input2);
+    }
 }
 
-// ===================== SO注入入口（无延迟） =====================
+// ===================== 主线程初始化（保留3秒延迟，确保游戏环境完全就绪） =====================
+static void* MainThread(void*) {
+    sleep(3); // 关键：等待游戏完全启动，EGL环境初始化完成
+    GlossInit(true);
+    GHandle hEGL = GlossOpen("libEGL.so");
+    if (!hEGL) return nullptr;
+    void* swap = (void*)GlossSymbol(hEGL, "eglSwapBuffers", nullptr);
+    if (!swap) return nullptr;
+    GlossHook(swap, (void*)hook_eglSwapBuffers, (void**)&orig_eglSwapBuffers);
+    HookInput();
+    return nullptr;
+}
+
+// ===================== SO注入入口 =====================
 __attribute__((constructor))
 void MCbackup_Init() {
-    std::thread([=]() {
-        // 已彻底删除延迟，SO加载后直接初始化
-        GlossInit(true);
-        GHandle hEGL = GlossOpen("libEGL.so");
-        if (!hEGL) return;
-        void* swap = (void*)GlossSymbol(hEGL, "eglSwapBuffers", nullptr);
-        if (!swap) return;
-        GlossHook(swap, (void*)hook_eglSwapBuffers, (void**)&orig_eglSwapBuffers);
-        HookInput();
-    }).detach();
-}
-
-// ===================== 标准JNI入口（安卓SO加载规范） =====================
-JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
-    return JNI_VERSION_1_6;
+    pthread_t t;
+    pthread_create(&t, nullptr, MainThread, nullptr);
 }
