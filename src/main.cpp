@@ -23,8 +23,6 @@
 #include "ImGui/imgui.h"
 #include "ImGui/backends/imgui_impl_opengl3.h"
 #include "ImGui/backends/imgui_impl_android.h"
-#include "common/transition.h"
-
 // ===================== Zoom Camera =====================
 static bool g_ZoomInitialized = false;
 static bool g_ZoomEnable = false;
