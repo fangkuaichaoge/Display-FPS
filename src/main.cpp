@@ -26,9 +26,9 @@
 #include "ImGui/backends/imgui_impl_opengl3.h"
 #include "ImGui/backends/imgui_impl_android.h"
 
-// ===================== 备份路径常量配置 =====================
+// ===================== Backup Path Config =====================
 #define BASE_DIR        "/storage/emulated/0/Android/data/com.stardust.mclauncher/files/games/com.mojang/"
-#define ROOT_DIR        "/storage/emulated/0/MC外部备份"
+#define ROOT_DIR        "/storage/emulated/0/MCBackup"
 #define DIRS_BEHAVIOR   "behavior_packs"
 #define DIRS_RESOURCE   "resource_packs"
 #define DIRS_SKIN       "skin_packs"
@@ -37,29 +37,29 @@
 #define MAX_LOG_COUNT   30
 #define READ_CHUNK_SIZE 4096
 
-// ===================== 线程安全的备份状态管理 =====================
+// ===================== Backup State =====================
 struct BackupState {
     bool is_backing_up = false;
-    std::string current_status = "等待执行备份";
+    std::string current_status = "Ready";
     std::vector<std::string> recent_logs;
     enum Result { NONE, SUCCESS, FAILED } last_result = NONE;
 };
 static BackupState g_backup_state;
 static std::mutex g_state_mutex;
 
-// ===================== ImGui渲染核心全局状态 =====================
+// ===================== ImGui Globals =====================
 static bool g_Initialized = false;
 static int g_Width = 0, g_Height = 0;
 static EGLContext g_TargetContext = EGL_NO_CONTEXT;
 static EGLSurface g_TargetSurface = EGL_NO_SURFACE;
-static ImFont* g_ChineseFont = nullptr;
+static ImFont* g_UIFont = nullptr;
 
-// ===================== Hook函数指针声明 =====================
+// ===================== Hook Pointers =====================
 static EGLBoolean (*orig_eglSwapBuffers)(EGLDisplay, EGLSurface) = nullptr;
 static void (*orig_Input1)(void*, void*, void*) = nullptr;
 static int32_t (*orig_Input2)(void*, void*, bool, long, uint32_t*, AInputEvent**) = nullptr;
 
-// ===================== 日志功能 =====================
+// ===================== Log =====================
 static std::string get_log_path() {
     return std::string(ROOT_DIR) + "/backup_log.txt";
 }
@@ -70,8 +70,8 @@ static void log(const std::string& msg) {
         auto now = std::chrono::system_clock::now();
         std::time_t now_time = std::chrono::system_clock::to_time_t(now);
         char time_buf[32] = {0};
-        strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", localtime(&now_time));
-        formatted_msg = "[" + std::string(time_buf) + "] " + msg;
+        strftime(time_buf, sizeof(time_buf), "[%Y-%m-%d %H:%M:%S] ", localtime(&now_time));
+        formatted_msg = std::string(time_buf) + msg;
     }
 
     {
@@ -91,7 +91,7 @@ static void log(const std::string& msg) {
     } catch (...) {}
 }
 
-// ===================== 压缩功能 =====================
+// ===================== Compress Folder =====================
 static bool compress_folder(const std::string& src_path, const std::string& dest_path) {
     remove(TMP_ZIP);
     int error = 0;
@@ -147,36 +147,36 @@ static bool compress_folder(const std::string& src_path, const std::string& dest
     return true;
 }
 
-// ===================== 备份逻辑 =====================
+// ===================== Backup Task =====================
 static void do_backup() {
     {
         std::lock_guard<std::mutex> lock(g_state_mutex);
         g_backup_state.is_backing_up = true;
-        g_backup_state.current_status = "初始化备份...";
+        g_backup_state.current_status = "Initializing...";
         g_backup_state.last_result = BackupState::NONE;
         g_backup_state.recent_logs.clear();
     }
 
-    log("=== 开始全量备份 ===");
+    log("Backup started.");
 
     try {
         if (!std::filesystem::exists(BASE_DIR)) {
-            log("游戏目录不存在");
-            throw std::runtime_error("dir not exist");
+            log("Game directory not found.");
+            throw std::runtime_error("dir missing");
         }
         std::filesystem::create_directories(ROOT_DIR);
         FILE* test = fopen((std::string(ROOT_DIR) + "/test.tmp").c_str(), "wb");
-        if (!test) { log("无存储权限"); throw std::runtime_error("permission"); }
+        if (!test) { log("Storage permission denied."); throw std::runtime_error("permission"); }
         fclose(test); remove((std::string(ROOT_DIR) + "/test.tmp").c_str());
     } catch (...) {
         std::lock_guard<std::mutex> lock(g_state_mutex);
         g_backup_state.is_backing_up = false;
-        g_backup_state.current_status = "初始化失败";
+        g_backup_state.current_status = "Init failed";
         g_backup_state.last_result = BackupState::FAILED;
         return;
     }
 
-    std::string addon_path = std::string(ROOT_DIR) + "/MC备份_资源包.mcaddon";
+    std::string addon_path = std::string(ROOT_DIR) + "/Backup_Packs.mcaddon";
     int err = 0;
     zip_t* main_zip = zip_open(addon_path.c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err);
     if (main_zip) {
@@ -187,17 +187,17 @@ static void do_backup() {
             for (auto& entry : std::filesystem::directory_iterator(full)) {
                 if (!entry.is_directory()) continue;
                 std::string name = entry.path().filename().string();
-                std::string tmp = std::string(TMP_ZIP);
-                compress_folder(entry.path().string(), tmp);
+                compress_folder(entry.path().string(), TMP_ZIP);
 
-                FILE* f = fopen(tmp.c_str(), "rb");
+                FILE* f = fopen(TMP_ZIP, "rb");
                 if (!f) continue;
                 fseek(f, 0, SEEK_END);
                 long sz = ftell(f);
                 fseek(f, 0, SEEK_SET);
                 zip_source_t* s = zip_source_filep(main_zip, f, 0, sz);
                 if (s) zip_file_add(main_zip, (name + ".mcpack").c_str(), s, ZIP_FL_OVERWRITE);
-                remove(tmp.c_str());
+                remove(TMP_ZIP);
+                log("Packed: " + name);
             }
         }
         zip_close(main_zip);
@@ -210,34 +210,71 @@ static void do_backup() {
             std::string name = entry.path().filename().string();
             std::string dst = std::string(ROOT_DIR) + "/" + name + ".mcworld";
             compress_folder(entry.path().string(), dst);
-            log("导出地图: " + name);
+            log("World saved: " + name);
         }
     }
 
     {
         std::lock_guard<std::mutex> lock(g_state_mutex);
         g_backup_state.is_backing_up = false;
-        g_backup_state.current_status = "备份完成";
+        g_backup_state.current_status = "Backup completed";
         g_backup_state.last_result = BackupState::SUCCESS;
     }
-    log("=== 备份完成 ===");
+    log("All done.");
+}
+
+// ===================== 强制黄绿色样式（每次都刷）=====================
+static void ForceStyle() {
+    ImGuiStyle& s = ImGui::GetStyle();
+    ImVec4* c = s.Colors;
+
+    c[ImGuiCol_WindowBg] = ImVec4(0.93f, 0.98f, 0.83f, 1.0f);
+    c[ImGuiCol_Text] = ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
+    c[ImGuiCol_Button] = ImVec4(0.70f, 0.90f, 0.30f, 1.0f);
+    c[ImGuiCol_ButtonHovered] = ImVec4(0.80f, 1.00f, 0.40f, 1.0f);
+    c[ImGuiCol_ButtonActive] = ImVec4(0.60f, 0.80f, 0.20f, 1.0f);
+    c[ImGuiCol_FrameBg] = ImVec4(0.86f, 0.96f, 0.76f, 1.0f);
+    c[ImGuiCol_ChildBg] = ImVec4(0.86f, 0.96f, 0.76f, 1.0f);
+    c[ImGuiCol_PopupBg] = ImVec4(0.93f, 0.98f, 0.83f, 1.0f);
+
+    c[ImGuiCol_ScrollbarBg] = ImVec4(0.86f, 0.96f, 0.76f, 1.0f);
+    c[ImGuiCol_ScrollbarGrab] = ImVec4(0.70f, 0.90f, 0.30f, 1.0f);
+    c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.80f, 1.00f, 0.40f, 1.0f);
+    c[ImGuiCol_ScrollbarGrabActive] = ImVec4(0.60f, 0.80f, 0.20f, 1.0f);
+
+    c[ImGuiCol_Header] = ImVec4(0.70f, 0.90f, 0.30f, 0.6f);
+    c[ImGuiCol_HeaderHovered] = ImVec4(0.80f, 1.00f, 0.40f, 0.8f);
+    c[ImGuiCol_HeaderActive] = ImVec4(0.60f, 0.80f, 0.20f, 0.8f);
+
+    c[ImGuiCol_Separator] = ImVec4(0.3f,0.5f,0.1f,0.5f);
+    c[ImGuiCol_Border] = ImVec4(0.3f,0.5f,0.1f,0.3f);
+
+    s.WindowRounding = 16;
+    s.FrameRounding = 10;
+    s.GrabRounding = 10;
+    s.ScrollbarRounding = 8;
+    s.WindowPadding = ImVec2(16,16);
+    s.FramePadding = ImVec2(12,10);
+    s.TouchExtraPadding = ImVec2(8,8);
 }
 
 // ===================== UI =====================
 static void DrawUI() {
-    if (g_ChineseFont) ImGui::PushFont(g_ChineseFont);
+    ForceStyle(); // 每次画UI都强制刷颜色
+
+    if (g_UIFont) ImGui::PushFont(g_UIFont);
 
     ImGuiIO& io = ImGui::GetIO();
     const float pad = 20;
     ImGui::SetNextWindowPos(ImVec2(pad, pad), ImGuiCond_Once);
     ImGui::SetNextWindowSizeConstraints(ImVec2(380, 0), ImVec2(io.DisplaySize.x*0.92f, io.DisplaySize.y*0.85f));
 
-    ImGui::Begin("MC一键备份工具", nullptr,
+    ImGui::Begin("MC Backup Tool", nullptr,
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
 
-    ImGui::SetCursorPosX((ImGui::GetWindowWidth() - ImGui::CalcTextSize("MC世界一键备份工具").x) * 0.5f);
-    ImGui::TextColored(ImVec4(0.2f,0.5f,0.1f,1), "MC世界一键备份工具");
+    ImGui::SetCursorPosX((ImGui::GetWindowWidth() - ImGui::CalcTextSize("MC World Backup").x) * 0.5f);
+    ImGui::TextColored(ImVec4(0.2f,0.5f,0.1f,1), "MC World Backup");
     ImGui::Separator();
     ImGui::Dummy(ImVec2(0,10));
 
@@ -246,37 +283,37 @@ static void DrawUI() {
 
     if (st.is_backing_up) {
         ImGui::BeginDisabled();
-        ImGui::Button("正在备份...", ImVec2(-1,60));
+        ImGui::Button("Backing up...", ImVec2(-1,60));
         ImGui::EndDisabled();
     } else {
-        if (ImGui::Button("✅ 一键全量备份", ImVec2(-1,60))) {
+        if (ImGui::Button("Start Full Backup", ImVec2(-1,60))) {
             std::thread(do_backup).detach();
         }
     }
 
-    ImGui::Text("状态: ");
+    ImGui::Text("Status: ");
     ImGui::SameLine();
     if (st.is_backing_up)
         ImGui::TextColored(ImVec4(0.8f,0.6f,0,1), "%s", st.current_status.c_str());
     else if (st.last_result == BackupState::SUCCESS)
-        ImGui::TextColored(ImVec4(0.2f,0.7f,0.2f,1), "备份完成");
+        ImGui::TextColored(ImVec4(0.2f,0.7f,0.2f,1), "Completed");
     else if (st.last_result == BackupState::FAILED)
-        ImGui::TextColored(ImVec4(0.9f,0.2f,0.2f,1), "备份失败");
+        ImGui::TextColored(ImVec4(0.9f,0.2f,0.2f,1), "Failed");
     else
-        ImGui::Text("等待操作");
+        ImGui::Text("Ready");
 
     ImGui::Separator();
-    ImGui::Text("日志:");
+    ImGui::Text("Log:");
     ImGui::BeginChild("log", ImVec2(-1,260), true);
     for (auto& s : st.recent_logs) ImGui::TextWrapped("%s", s.c_str());
     if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 15) ImGui::SetScrollHereY(1);
     ImGui::EndChild();
 
     ImGui::End();
-    if (g_ChineseFont) ImGui::PopFont();
+    if (g_UIFont) ImGui::PopFont();
 }
 
-// ===================== GL状态 =====================
+// ===================== GL State =====================
 struct GLState {
     GLint prog, tex, aTex, aBuf, eBuf, vao, fbo, vp[4], sc[4], bSrc, bDst, bSrcA, bDstA;
     GLboolean blend, cull, depth, scissor, stencil, dither;
@@ -326,39 +363,7 @@ static void RestoreGL(const GLState& s) {
     glFrontFace(s.frontFace);
 }
 
-// ===================== 样式：黄绿色主题（真正生效版） =====================
-static void SetupStyle() {
-    ImGuiStyle& s = ImGui::GetStyle();
-    ImVec4* c = s.Colors;
-
-    // 黄绿色主题
-    c[ImGuiCol_WindowBg] = ImVec4(0.92f, 0.98f, 0.82f, 0.94f);
-    c[ImGuiCol_Text] = ImVec4(0.15f, 0.35f, 0.05f, 1.0f);
-    c[ImGuiCol_Button] = ImVec4(0.65f, 0.85f, 0.3f, 0.9f);
-    c[ImGuiCol_ButtonHovered] = ImVec4(0.75f, 0.95f, 0.4f, 1.0f);
-    c[ImGuiCol_ButtonActive] = ImVec4(0.55f, 0.75f, 0.2f, 1.0f);
-    c[ImGuiCol_FrameBg] = ImVec4(0.85f, 0.95f, 0.75f, 0.9f);
-    c[ImGuiCol_FrameBgHovered] = ImVec4(0.8f, 0.9f, 0.7f, 1.0f);
-    c[ImGuiCol_FrameBgActive] = ImVec4(0.75f, 0.85f, 0.65f, 1.0f);
-    c[ImGuiCol_Header] = ImVec4(0.65f, 0.85f, 0.3f, 0.6f);
-    c[ImGuiCol_HeaderHovered] = ImVec4(0.75f, 0.95f, 0.4f, 0.8f);
-    c[ImGuiCol_HeaderActive] = ImVec4(0.55f, 0.75f, 0.2f, 0.8f);
-    c[ImGuiCol_Separator] = ImVec4(0.3f,0.5f,0.1f,0.5f);
-    c[ImGuiCol_ScrollbarBg] = ImVec4(0.85f,0.95f,0.75f,0.5f);
-    c[ImGuiCol_ScrollbarGrab] = ImVec4(0.65f,0.85f,0.3f,0.6f);
-    c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.75f,0.95f,0.4f,0.8f);
-    c[ImGuiCol_ScrollbarGrabActive] = ImVec4(0.55f,0.75f,0.2f,0.8f);
-
-    s.WindowRounding = 16;
-    s.FrameRounding = 10;
-    s.GrabRounding = 10;
-    s.ScrollbarRounding = 8;
-    s.WindowPadding = ImVec2(16,16);
-    s.FramePadding = ImVec2(12,10);
-    s.TouchExtraPadding = ImVec2(8,8);
-}
-
-// ===================== 初始化 =====================
+// ===================== ImGui Init =====================
 static void Setup() {
     if (g_Initialized || g_Width <=0 || g_Height <=0) return;
     ImGui::CreateContext();
@@ -369,41 +374,25 @@ static void Setup() {
     float scale = (float)g_Height / 720.0f;
     scale = std::clamp(scale, 1.6f, 4.0f);
 
-    // 中文字体
-    const char* paths[] = {
-        "/system/fonts/NotoSansSC-Regular.otf",
-        "/system/fonts/NotoSansCJK-Regular.ttc",
-        "/system/fonts/DroidSansFallback.ttf",
-        "/system/fonts/MiSans-Regular.ttf",
-        "/system/fonts/HarmonyOS_Sans_SC_Regular.ttf"
-    };
-
     ImFontConfig cfg;
     cfg.SizePixels = 36 * scale;
     cfg.OversampleH = cfg.OversampleV = 2;
     cfg.PixelSnapH = true;
+    g_UIFont = io.Fonts->AddFontDefault(&cfg);
 
-    for (auto p : paths) {
-        if (access(p, F_OK) == 0) {
-            g_ChineseFont = io.Fonts->AddFontFromFileTTF(p, cfg.SizePixels, &cfg, io.Fonts->GetGlyphRangesChineseFull());
-            if (g_ChineseFont) break;
-        }
-    }
-    if (!g_ChineseFont) g_ChineseFont = io.Fonts->AddFontDefault(&cfg);
-
-    // 初始化后端
     ImGui_ImplAndroid_Init(nullptr);
     ImGui_ImplOpenGL3_Init("#version 300 es");
 
-    // ✅ 这里只设置一次颜色，真正生效
-    SetupStyle();
-
+    ForceStyle();
     g_Initialized = true;
 }
 
 static void Render() {
     if (!g_Initialized) return;
-    GLState s; SaveGL(s);
+
+    GLState s;
+    SaveGL(s);
+
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2((float)g_Width, (float)g_Height);
     io.DisplayFramebufferScale = ImVec2(1,1);
@@ -411,7 +400,9 @@ static void Render() {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplAndroid_NewFrame(g_Width, g_Height);
     ImGui::NewFrame();
-    DrawUI();
+
+    DrawUI(); // 里面自带强制刷颜色
+
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
@@ -447,7 +438,7 @@ static EGLBoolean hook_eglSwapBuffers(EGLDisplay d, EGLSurface s) {
     return orig_eglSwapBuffers(d,s);
 }
 
-// ===================== 输入Hook =====================
+// ===================== Input Hook =====================
 static void hook_Input1(void* thiz, void* a1, void* a2) {
     if (orig_Input1) orig_Input1(thiz,a1,a2);
     if (thiz && g_Initialized) ImGui_ImplAndroid_HandleInputEvent((AInputEvent*)thiz);
@@ -470,7 +461,7 @@ static void HookInput() {
     if (s2) GlossHook(s2, (void*)hook_Input2, (void**)&orig_Input2);
 }
 
-// ===================== 启动 =====================
+// ===================== Main Thread =====================
 static void* MainThread(void*) {
     sleep(3);
     GlossInit(true);
