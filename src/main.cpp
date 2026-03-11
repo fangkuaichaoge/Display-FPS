@@ -1,3 +1,4 @@
+// ===================== 系统标准库头文件 =====================
 #include <jni.h>
 #include <android/input.h>
 #include <EGL/egl.h>
@@ -13,16 +14,18 @@
 #include <mutex>
 #include <chrono>
 #include <filesystem>
+
+// ===================== 第三方库头文件 =====================
 #include <zip.h>
 
+// ===================== 项目依赖头文件 =====================
 #include "pl/Hook.h"
 #include "pl/Gloss.h"
-
 #include "ImGui/imgui.h"
 #include "ImGui/backends/imgui_impl_opengl3.h"
 #include "ImGui/backends/imgui_impl_android.h"
 
-// ===================== 原Rust代码常量 100%还原 =====================
+// ===================== 备份路径常量配置 =====================
 #define BASE_DIR        "/storage/emulated/0/Android/data/com.stardust.mclauncher/files/games/com.mojang/"
 #define ROOT_DIR        "/storage/emulated/0/外部备份文件夹"
 #define DIRS_BEHAVIOR   "behavior_packs"
@@ -30,25 +33,37 @@
 #define DIRS_SKIN       "skin_packs"
 #define DIRS_WORLD      "minecraftWorlds"
 #define TMP_ZIP         "/storage/emulated/0/backup_tmp.zip"
-#define MAX_LOG_COUNT   20  // UI最多显示的日志条数
+#define MAX_LOG_COUNT   20
 
 // ===================== 线程安全的备份状态管理 =====================
 struct BackupState {
-    bool is_backing_up = false;        // 备份中标记（备份时禁用按钮）
+    bool is_backing_up = false;
     std::string current_status = "等待执行备份";
     std::vector<std::string> recent_logs;
     enum Result { NONE, SUCCESS, FAILED } last_result = NONE;
 };
 static BackupState g_backup_state;
-static std::mutex g_state_mutex; // 线程锁，防止多线程数据竞争
+static std::mutex g_state_mutex;
 
-// ===================== 日志功能（写文件+同步UI显示） =====================
+// ===================== 全局基础运行状态 =====================
+static bool g_ImGui_Initialized = false;
+static int g_Screen_Width = 0, g_Screen_Height = 0;
+static EGLContext g_Target_Context = EGL_NO_CONTEXT;
+static EGLSurface g_Target_Surface = EGL_NO_SURFACE;
+
+// ===================== Hook函数指针声明 =====================
+static EGLBoolean (*orig_eglSwapBuffers)(EGLDisplay, EGLSurface) = nullptr;
+static void (*orig_Input1)(void*, void*, void*) = nullptr;
+static int32_t (*orig_Input2)(void*, void*, bool, long, uint32_t*, AInputEvent**) = nullptr;
+static const char* MAIN_WINDOW_NAME = "MC一键备份工具";
+
+// ===================== 日志功能 =====================
 static std::string get_log_path() {
     return std::string(ROOT_DIR) + "/backup_log.txt";
 }
 
 static void log(const std::string& msg) {
-    // 1. 写本地日志文件
+    // 写本地日志文件
     std::filesystem::create_directories(ROOT_DIR);
     FILE* f = fopen(get_log_path().c_str(), "a+");
     if (f) {
@@ -60,7 +75,7 @@ static void log(const std::string& msg) {
         fclose(f);
     }
 
-    // 2. 同步到UI显示（加线程锁）
+    // 同步到UI显示
     std::lock_guard<std::mutex> lock(g_state_mutex);
     g_backup_state.recent_logs.push_back(msg);
     if (g_backup_state.recent_logs.size() > MAX_LOG_COUNT) {
@@ -68,13 +83,10 @@ static void log(const std::string& msg) {
     }
 }
 
-// ===================== 核心压缩功能 完全还原Rust逻辑 =====================
-// 压缩文件夹到目标路径，支持mcpack/mcworld/zip格式
-static bool compress_folder(const std::string& src_path, const std::string& dest_path, int compression_level = Z_BEST_COMPRESSION) {
-    // 清理临时文件
+// ===================== 核心压缩功能 =====================
+static bool compress_folder(const std::string& src_path, const std::string& dest_path) {
     remove(TMP_ZIP);
 
-    // 打开zip文件
     int error = 0;
     zip_t* zip = zip_open(TMP_ZIP, ZIP_CREATE | ZIP_TRUNCATE, &error);
     if (!zip) {
@@ -82,7 +94,6 @@ static bool compress_folder(const std::string& src_path, const std::string& dest
         return false;
     }
 
-    // 递归遍历文件夹
     bool all_ok = true;
     try {
         for (const auto& entry : std::filesystem::recursive_directory_iterator(src_path)) {
@@ -90,12 +101,8 @@ static bool compress_folder(const std::string& src_path, const std::string& dest
             std::string relative_path = full_path.substr(src_path.length() + 1);
 
             if (entry.is_directory()) {
-                // 添加目录
-                if (!relative_path.empty()) {
-                    zip_dir_add(zip, relative_path.c_str(), 0);
-                }
+                if (!relative_path.empty()) zip_dir_add(zip, relative_path.c_str(), 0);
             } else if (entry.is_regular_file()) {
-                // 读取文件内容
                 FILE* f = fopen(full_path.c_str(), "rb");
                 if (!f) {
                     log("跳过无法读取的文件: " + relative_path);
@@ -114,7 +121,6 @@ static bool compress_folder(const std::string& src_path, const std::string& dest
                 }
                 fclose(f);
 
-                // 添加到zip
                 zip_source_t* source = zip_source_buffer(zip, buffer.data(), file_size, 0);
                 if (!source) {
                     log("创建zip源失败: " + relative_path);
@@ -134,9 +140,9 @@ static bool compress_folder(const std::string& src_path, const std::string& dest
         all_ok = false;
     }
 
-    // 关闭zip
     if (zip_close(zip) < 0) {
         log("压缩文件关闭失败");
+        zip_discard(zip);
         all_ok = false;
     }
 
@@ -145,7 +151,7 @@ static bool compress_folder(const std::string& src_path, const std::string& dest
         return false;
     }
 
-    // 把临时文件复制到目标路径
+    // 复制到目标路径
     FILE* tmp_f = fopen(TMP_ZIP, "rb");
     FILE* dest_f = fopen(dest_path.c_str(), "wb");
     if (!tmp_f || !dest_f) {
@@ -169,9 +175,9 @@ static bool compress_folder(const std::string& src_path, const std::string& dest
     return true;
 }
 
-// ===================== 核心备份逻辑 100%还原Rust代码 =====================
+// ===================== 核心备份全流程 =====================
 static void do_backup() {
-    // 线程锁更新状态
+    // 更新备份状态
     {
         std::lock_guard<std::mutex> lock(g_state_mutex);
         g_backup_state.is_backing_up = true;
@@ -184,7 +190,7 @@ static void do_backup() {
     std::filesystem::create_directories(ROOT_DIR);
     remove(TMP_ZIP);
 
-    // -------------------- 1. 打包资源/行为/皮肤包为mcaddon --------------------
+    // 1. 打包资源/行为/皮肤包为mcaddon
     std::string addon_path = std::string(ROOT_DIR) + "/外部备份_资源包+行为包+皮肤包.mcaddon";
     remove(addon_path.c_str());
 
@@ -207,7 +213,6 @@ static void do_backup() {
             continue;
         }
 
-        // 遍历目录下的所有子文件夹
         for (const auto& entry : std::filesystem::directory_iterator(full_dir)) {
             if (!entry.is_directory()) continue;
 
@@ -221,13 +226,12 @@ static void do_backup() {
                 g_backup_state.current_status = "正在打包: " + pack_name;
             }
 
-            // 先把单个包压缩成mcpack
             if (!compress_folder(pack_path, TMP_ZIP)) {
                 log("打包失败，跳过: " + pack_name);
                 continue;
             }
 
-            // 把mcpack添加到主mcaddon里
+            // 读取临时mcpack添加到主文件
             FILE* tmp_f = fopen(TMP_ZIP, "rb");
             if (!tmp_f) continue;
 
@@ -241,20 +245,17 @@ static void do_backup() {
             remove(TMP_ZIP);
 
             zip_source_t* source = zip_source_buffer(main_zip, buffer.data(), file_size, 0);
-            if (source) {
-                zip_file_add(main_zip, tmp_pack_name.c_str(), source, ZIP_FL_OVERWRITE);
-            }
+            if (source) zip_file_add(main_zip, tmp_pack_name.c_str(), source, ZIP_FL_OVERWRITE);
         }
     }
 
-    // 完成mcaddon打包
     if (zip_close(main_zip) < 0) {
         log("mcaddon文件打包失败");
     } else {
         log("资源包/行为包/皮肤包 → 合并为mcaddon完成");
     }
 
-    // -------------------- 2. 导出每个地图为单独的mcworld --------------------
+    // 2. 导出地图为mcworld
     std::string world_root = std::string(BASE_DIR) + DIRS_WORLD;
     if (std::filesystem::exists(world_root)) {
         for (const auto& entry : std::filesystem::directory_iterator(world_root)) {
@@ -278,7 +279,7 @@ static void do_backup() {
         }
     }
 
-    // -------------------- 备份完成，更新状态 --------------------
+    // 备份完成
     log("=== 全部备份完成 ===");
     std::lock_guard<std::mutex> lock(g_state_mutex);
     g_backup_state.is_backing_up = false;
@@ -286,8 +287,7 @@ static void do_backup() {
     g_backup_state.last_result = BackupState::SUCCESS;
 }
 
-// ===================== ImGui UI绘制 按钮控制备份 =====================
-static const char* MAIN_WINDOW_NAME = "MC备份工具";
+// ===================== ImGui UI绘制（一键备份核心界面） =====================
 static void DrawUI() {
     ImGuiIO& io = ImGui::GetIO();
     const ImVec4 titleColor = ImVec4(0.15f, 0.35f, 0.05f, 1.0f);
@@ -297,11 +297,9 @@ static void DrawUI() {
 
     // 窗口基础设置：默认左上角，可拖动
     const float pad = 18.0f;
-    ImVec2 defaultPos = ImVec2(pad, pad);
-    ImGui::SetNextWindowPos(defaultPos, ImGuiCond_Once);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(350.0f, 0), ImVec2(450.0f, io.DisplaySize.y * 0.8f));
+    ImGui::SetNextWindowPos(ImVec2(pad, pad), ImGuiCond_Once);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(360.0f, 0), ImVec2(450.0f, io.DisplaySize.y * 0.8f));
 
-    // 窗口标志
     ImGui::Begin(MAIN_WINDOW_NAME, nullptr,
                  ImGuiWindowFlags_NoDecoration |
                  ImGuiWindowFlags_AlwaysAutoResize |
@@ -309,11 +307,10 @@ static void DrawUI() {
                  ImGuiWindowFlags_NoFocusOnAppearing);
 
     // 可拖动标题区域
-    ImVec2 titleSize = ImGui::CalcTextSize("☘︎ MC备份工具");
+    ImVec2 titleSize = ImGui::CalcTextSize("☘︎ MC一键备份工具");
     ImGui::SetCursorPosX((ImGui::GetWindowWidth() - titleSize.x) * 0.5f);
-    ImGui::TextColored(titleColor, "☘︎ MC备份工具");
+    ImGui::TextColored(titleColor, "☘︎ MC一键备份工具");
     
-    // 标题拖动逻辑
     ImVec2 titleMin = ImGui::GetItemRectMin();
     ImVec2 titleMax = ImGui::GetItemRectMax();
     ImGui::SetCursorScreenPos(titleMin);
@@ -321,55 +318,54 @@ static void DrawUI() {
     if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0)) {
         ImVec2 mousePos = ImGui::GetMousePos();
         ImVec2 dragDelta = ImGui::GetMouseDragDelta(0);
-        ImVec2 newWindowPos = ImVec2(mousePos.x - dragDelta.x, mousePos.y - dragDelta.y);
-        ImGui::SetWindowPos(MAIN_WINDOW_NAME, newWindowPos);
+        ImGui::SetWindowPos(MAIN_WINDOW_NAME, ImVec2(mousePos.x - dragDelta.x, mousePos.y - dragDelta.y));
     }
 
     ImGui::Separator();
-    ImGui::Spacing();
+    ImGui::Spacing(10);
 
     // 线程安全读取状态
     std::lock_guard<std::mutex> lock(g_state_mutex);
 
-    // 1. 备份状态显示
-    ImGui::TextColored(titleColor, "当前状态: ");
+    // 核心一键备份按钮
+    if (g_backup_state.is_backing_up) {
+        ImGui::BeginDisabled();
+        ImGui::Button("正在备份中，请稍候...", ImVec2(-1, 50));
+        ImGui::EndDisabled();
+    } else {
+        if (ImGui::Button("✅ 一键执行全量备份", ImVec2(-1, 50))) {
+            std::thread backup_thread(do_backup);
+            backup_thread.detach();
+        }
+    }
+
+    ImGui::Spacing(8);
+
+    // 状态显示
+    ImGui::TextColored(titleColor, "当前状态：");
     ImGui::SameLine();
     if (g_backup_state.is_backing_up) {
         ImGui::TextColored(warningColor, "%s", g_backup_state.current_status.c_str());
     } else if (g_backup_state.last_result == BackupState::SUCCESS) {
-        ImGui::TextColored(successColor, "%s", g_backup_state.current_status.c_str());
+        ImGui::TextColored(successColor, "✅ 备份完成，文件已保存到指定目录");
     } else if (g_backup_state.last_result == BackupState::FAILED) {
-        ImGui::TextColored(failedColor, "%s", g_backup_state.current_status.c_str());
+        ImGui::TextColored(failedColor, "❌ 备份失败，请查看日志");
     } else {
-        ImGui::Text("%s", g_backup_state.current_status.c_str());
+        ImGui::Text("等待执行备份");
     }
 
-    ImGui::Spacing();
-
-    // 2. 核心备份按钮
-    if (g_backup_state.is_backing_up) {
-        // 备份中禁用按钮，显示进度
-        ImGui::BeginDisabled();
-        ImGui::Button("正在备份中...", ImVec2(-1, 40));
-        ImGui::EndDisabled();
-    } else {
-        // 正常可点击按钮
-        if (ImGui::Button("开始执行备份", ImVec2(-1, 40))) {
-            // 点击按钮，在子线程执行备份（不卡UI主线程）
-            std::thread backup_thread(do_backup);
-            backup_thread.detach(); // 分离线程，后台执行
-        }
-    }
-
-    ImGui::Spacing();
+    ImGui::Spacing(8);
     ImGui::Separator();
-    ImGui::Spacing();
+    ImGui::Spacing(8);
 
-    // 3. 日志预览区域
-    ImGui::TextColored(titleColor, "备份日志:");
-    ImGui::BeginChild("##log_area", ImVec2(-1, 200), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+    // 日志预览区域
+    ImGui::TextColored(titleColor, "备份日志：");
+    ImGui::BeginChild("##log_area", ImVec2(-1, 220), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
     for (const auto& log_line : g_backup_state.recent_logs) {
         ImGui::TextWrapped("%s", log_line.c_str());
+    }
+    if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 10.0f) {
+        ImGui::SetScrollHereY(1.0f);
     }
     ImGui::EndChild();
 
@@ -377,33 +373,7 @@ static void DrawUI() {
     ImGui::End();
 }
 
-// ===================== 以下为安卓ImGui基础运行框架 完整保留 =====================
-// 全局基础状态
-static bool g_Initialized = false;
-static int g_Width = 0, g_Height = 0;
-static EGLContext g_TargetContext = EGL_NO_CONTEXT;
-static EGLSurface g_TargetSurface = EGL_NO_SURFACE;
-
-// 函数指针声明
-static EGLBoolean (*orig_eglSwapBuffers)(EGLDisplay, EGLSurface) = nullptr;
-static void (*orig_Input1)(void*, void*, void*) = nullptr;
-static int32_t (*orig_Input2)(void*, void*, bool, long, uint32_t*, AInputEvent**) = nullptr;
-
-// 输入事件Hook（保证ImGui触摸交互正常）
-static void hook_Input1(void* thiz, void* a1, void* a2) {
-    if (orig_Input1) orig_Input1(thiz, a1, a2);
-    if (thiz && g_Initialized) ImGui_ImplAndroid_HandleInputEvent((AInputEvent*)thiz);
-}
-
-static int32_t hook_Input2(void* thiz, void* a1, bool a2, long a3, uint32_t* a4, AInputEvent** event) {
-    int32_t result = orig_Input2 ? orig_Input2(thiz, a1, a2, a3, a4, event) : 0;
-    if (result == 0 && event && *event && g_Initialized) {
-        ImGui_ImplAndroid_HandleInputEvent(*event);
-    }
-    return result;
-}
-
-// GL状态保存/恢复（避免干扰游戏渲染，防止花屏）
+// ===================== GL状态保护（避免游戏花屏） =====================
 struct GLState {
     GLint prog, tex, aTex, aBuf, eBuf, vao, fbo, vp[4], sc[4], bSrc, bDst;
     GLboolean blend, cull, depth, scissor;
@@ -444,15 +414,15 @@ static void RestoreGL(const GLState& s) {
     s.scissor ? glEnable(GL_SCISSOR_TEST) : glDisable(GL_SCISSOR_TEST);
 }
 
-// ImGui环境初始化
+// ===================== ImGui环境初始化 =====================
 static void SetupImGui() {
-    if (g_Initialized || g_Width <= 0 || g_Height <= 0) return;
+    if (g_ImGui_Initialized || g_Screen_Width <= 0 || g_Screen_Height <= 0) return;
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
 
     // 屏幕自动缩放适配
-    float scale = (float)g_Height / 720.0f;
+    float scale = (float)g_Screen_Height / 720.0f;
     scale = (scale < 1.6f) ? 1.6f : (scale > 4.0f ? 4.0f : scale);
 
     // 字体高清渲染
@@ -460,10 +430,9 @@ static void SetupImGui() {
     cfg.SizePixels = 36.0f * scale;
     cfg.OversampleH = cfg.OversampleV = 2;
     cfg.PixelSnapH = true;
-    ImFont* defaultFont = io.Fonts->AddFontDefault(&cfg);
-    io.FontDefault = defaultFont;
+    io.Fonts->AddFontDefault(&cfg);
 
-    // 全局样式&淡黄绿主题
+    // 淡黄绿主题样式
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 14.0f;
     style.FrameRounding = 8.0f;
@@ -477,7 +446,6 @@ static void SetupImGui() {
     style.FrameBorderSize = 0.0f;
     style.PopupRounding = 10.0f;
 
-    // 淡黄绿主题配色
     ImVec4* colors = style.Colors;
     colors[ImGuiCol_WindowBg] = ImVec4(0.92f, 0.98f, 0.82f, 0.85f);
     colors[ImGuiCol_Text] = ImVec4(0.08f, 0.12f, 0.03f, 1.00f);
@@ -501,10 +469,10 @@ static void SetupImGui() {
     ImGui_ImplOpenGL3_Init("#version 300 es");
     style.ScaleAllSizes(scale);
 
-    g_Initialized = true;
+    g_ImGui_Initialized = true;
 }
 
-// EGL SwapBuffers Hook（每帧渲染ImGui）
+// ===================== EGL渲染Hook（每帧绘制UI） =====================
 static EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surf) {
     if (!orig_eglSwapBuffers) return EGL_FALSE;
 
@@ -514,23 +482,23 @@ static EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surf) {
     eglQuerySurface(dpy, surf, EGL_HEIGHT, &h);
     if (w < 400 || h < 400) return orig_eglSwapBuffers(dpy, surf);
 
-    // 初始化目标上下文
-    if (g_TargetContext == EGL_NO_CONTEXT) {
-        g_TargetContext = eglGetCurrentContext();
-        g_TargetSurface = surf;
+    // 初始化目标渲染上下文
+    if (g_Target_Context == EGL_NO_CONTEXT) {
+        g_Target_Context = eglGetCurrentContext();
+        g_Target_Surface = surf;
     }
 
-    // 只在目标窗口渲染
-    if (eglGetCurrentContext() != g_TargetContext || surf != g_TargetSurface) {
+    // 只在目标游戏窗口渲染
+    if (eglGetCurrentContext() != g_Target_Context || surf != g_Target_Surface) {
         return orig_eglSwapBuffers(dpy, surf);
     }
 
-    g_Width = w;
-    g_Height = h;
+    g_Screen_Width = w;
+    g_Screen_Height = h;
     SetupImGui();
 
-    // 渲染ImGui
-    if (g_Initialized) {
+    // 渲染ImGui UI
+    if (g_ImGui_Initialized) {
         GLState gl_state;
         SaveGL(gl_state);
 
@@ -549,27 +517,34 @@ static EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surf) {
     return orig_eglSwapBuffers(dpy, surf);
 }
 
-// 输入事件Hook挂载
+// ===================== 触摸事件Hook（保证UI交互正常） =====================
+static void hook_Input1(void* thiz, void* a1, void* a2) {
+    if (orig_Input1) orig_Input1(thiz, a1, a2);
+    if (thiz && g_ImGui_Initialized) ImGui_ImplAndroid_HandleInputEvent((AInputEvent*)thiz);
+}
+
+static int32_t hook_Input2(void* thiz, void* a1, bool a2, long a3, uint32_t* a4, AInputEvent** event) {
+    int32_t result = orig_Input2 ? orig_Input2(thiz, a1, a2, a3, a4, event) : 0;
+    if (event && *event && g_ImGui_Initialized) ImGui_ImplAndroid_HandleInputEvent(*event);
+    return result;
+}
+
+// ===================== 输入事件Hook挂载 =====================
 static void HookInput() {
     void* sym1 = (void*)GlossSymbol(GlossOpen("libinput.so"),
         "_ZN7android13InputConsumer21initializeMotionEventEPNS_11MotionEventEPKNS_12InputMessageE", nullptr);
-    if (sym1) {
-        GHook h = GlossHook(sym1, (void*)hook_Input1, (void**)&orig_Input1);
-        if (h) return;
-    }
+    if (sym1) GlossHook(sym1, (void*)hook_Input1, (void**)&orig_Input1);
+
     void* sym2 = (void*)GlossSymbol(GlossOpen("libinput.so"),
-        "_ZN7android13InputConsumer7consumeEPNS_26InputEventFactoryInterfaceEblPjPPNS_10InputEventE", nullptr);
-    if (sym2) {
-        GHook h = GlossHook(sym2, (void*)hook_Input2, (void**)&orig_Input2);
-        if (h) return;
-    }
+        "_ZN7android13InputConsumer7consumeEPNS_12InputEventEblPjPSA_", nullptr);
+    if (sym2) GlossHook(sym2, (void*)hook_Input2, (void**)&orig_Input2);
 }
 
-// JNI入口（SO注入时自动执行）
+// ===================== SO注入入口（已删除3秒延迟） =====================
 __attribute__((constructor))
-void DisplayFPS_Init() {
+void MCbackup_Init() {
     std::thread([=]() {
-        sleep(3); // 延迟3秒，等游戏加载完成
+        // 已彻底删除sleep(3)延迟，SO加载后直接初始化
         GlossInit(true);
         GHandle hEGL = GlossOpen("libEGL.so");
         if (!hEGL) return;
@@ -580,7 +555,7 @@ void DisplayFPS_Init() {
     }).detach();
 }
 
-// 标准JNI_OnLoad入口（兼容安卓SO加载规范）
+// ===================== 标准JNI入口（安卓SO加载规范） =====================
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     return JNI_VERSION_1_6;
 }
