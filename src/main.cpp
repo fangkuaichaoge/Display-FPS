@@ -96,27 +96,38 @@ static void DrawMenu() {
     char buf[64];
     const ImVec4 titleColor = ImVec4(0.15f, 0.35f, 0.05f, 1.0f);
 
-    // 🔥 核心修改：窗口固定左上角，保留18px边距，其他参数完全不变
+    // 🔥 核心修改1：仅第一次启动时固定左上角，之后不再强制复位，允许拖动
     const float pad = 18.0f;
-    ImVec2 pos = ImVec2(pad, pad); // 左上角坐标，x=pad，y=pad
-    ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
+    ImVec2 defaultPos = ImVec2(pad, pad);
+    ImGui::SetNextWindowPos(defaultPos, ImGuiCond_Once); // 从Always改成Once，仅第一次生效
     ImGui::SetNextWindowSizeConstraints(ImVec2(220.0f, 0), ImVec2(260.0f, io.DisplaySize.y * 0.8f));
 
-    // 窗口标志不变
+    // 🔥 核心修改2：删掉了ImGuiWindowFlags_NoMove，解除拖动禁止
     ImGui::Begin("Performance HUD", nullptr,
                  ImGuiWindowFlags_NoDecoration |
                  ImGuiWindowFlags_AlwaysAutoResize |
                  ImGuiWindowFlags_NoSavedSettings |
-                 ImGuiWindowFlags_NoFocusOnAppearing |
-                 ImGuiWindowFlags_NoMove);
+                 ImGuiWindowFlags_NoFocusOnAppearing);
 
-    // 标题居中
-    ImGui::SetCursorPosX((ImGui::GetWindowWidth() - ImGui::CalcTextSize("☘︎  Matcha HUD").x) * 0.5f);
+    // 🔥 新增：顶部标题可拖动区域（无标题栏窗口的拖动适配）
+    // 拖动标题区域就能移动窗口，不会误触下方的按钮和数据
+    ImVec2 titleSize = ImGui::CalcTextSize("☘︎  Matcha HUD");
+    ImGui::SetCursorPosX((ImGui::GetWindowWidth() - titleSize.x) * 0.5f);
     ImGui::TextColored(titleColor, "☘︎  Matcha HUD");
+    
+    // 给标题区域添加可拖动交互
+    ImVec2 titleMin = ImGui::GetItemRectMin();
+    ImVec2 titleMax = ImGui::GetItemRectMax();
+    ImGui::SetCursorScreenPos(titleMin);
+    ImGui::InvisibleButton("##drag_zone", ImVec2(titleMax.x - titleMin.x, titleMax.y - titleMin.y));
+    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0)) {
+        ImGui::SetWindowPos(ImGui::GetCurrentWindow(), ImGui::GetMousePos() - ImGui::GetMouseDragDelta(0));
+    }
+
     ImGui::Separator();
     ImGui::Spacing();
 
-    // 全左对齐数据布局不变
+    // 全左对齐数据布局（完全保留）
     ImVec4 fpsColor = g_SmoothedData.fps >= 55.0f ? ImVec4(0.12f, 0.65f, 0.12f, 1.0f)
                        : g_SmoothedData.fps >= 30.0f ? ImVec4(0.75f, 0.55f, 0.05f, 1.0f)
                        : ImVec4(0.85f, 0.15f, 0.15f, 1.0f);
@@ -149,12 +160,12 @@ static void DrawMenu() {
     ImGui::Separator();
     ImGui::Spacing();
 
-    // 展开折叠按钮不变
+    // 展开折叠按钮（完全保留，点击功能正常）
     if (ImGui::Button(g_ShowDetails ? "▲ Hide Details" : "▼ Show Details", ImVec2(-1, 0))) {
         g_ShowDetails = !g_ShowDetails;
     }
 
-    // 展开详情面板不变
+    // 展开详情面板（完全保留）
     if (g_ShowDetails) {
         ImGui::Spacing();
         ImGui::Separator();
@@ -194,7 +205,7 @@ static void Setup() {
     ImFont* defaultFont = io.Fonts->AddFontDefault(&cfg);
     io.FontDefault = defaultFont;
 
-    // 全局样式不变
+    // 全局样式&淡黄绿主题（完全保留）
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 14.0f;
     style.FrameRounding = 8.0f;
@@ -208,7 +219,6 @@ static void Setup() {
     style.FrameBorderSize = 0.0f;
     style.PopupRounding = 10.0f;
 
-    // 淡黄绿色主题配色不变
     ImVec4* colors = style.Colors;
     colors[ImGuiCol_WindowBg] = ImVec4(0.92f, 0.98f, 0.82f, 0.85f);
     colors[ImGuiCol_Text] = ImVec4(0.08f, 0.12f, 0.03f, 1.00f);
@@ -242,7 +252,7 @@ static void Render() {
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2((float)g_Width, (float)g_Height);
 
-    // 帧时间计算不变
+    // 帧时间计算（完全保留）
     static double last_time = 0.0;
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -253,14 +263,13 @@ static void Render() {
     if (dt <= 0.0f) dt = 1.0f / 60.0f;
     io.DeltaTime = dt;
 
-    // 原始数据计算不变
+    // 原始数据计算&平滑滤波（完全保留）
     g_HudData.fps = io.Framerate;
     g_HudData.frameTime = dt * 1000.0f;
     g_HudData.cpuUsage = 20.0f + (rand() % 400) / 100.0f;
     g_HudData.latency = 10.0f + (rand() % 250) / 100.0f;
     g_HudData.memoryUsage = 120.0f + (rand() % 800) / 10.0f;
 
-    // 一阶低通平滑滤波不变
     const float smooth = 0.8f;
     g_SmoothedData.fps = smooth * g_SmoothedData.fps + (1 - smooth) * g_HudData.fps;
     g_SmoothedData.cpuUsage = smooth * g_SmoothedData.cpuUsage + (1 - smooth) * g_HudData.cpuUsage;
@@ -268,7 +277,7 @@ static void Render() {
     g_SmoothedData.memoryUsage = smooth * g_SmoothedData.memoryUsage + (1 - smooth) * g_HudData.memoryUsage;
     g_SmoothedData.frameTime = smooth * g_SmoothedData.frameTime + (1 - smooth) * g_HudData.frameTime;
 
-    // ImGui渲染流程不变
+    // ImGui渲染流程
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplAndroid_NewFrame(g_Width, g_Height);
     ImGui::NewFrame();
