@@ -481,11 +481,11 @@ static void DrawUI() {
     if (g_ChineseFont) ImGui::PopFont();
 }
 
-// ===================== GL状态保护（完整修复，避免花屏/渲染异常） =====================
+// ===================== GL状态保护（GLES3完全兼容，修复编译错误） =====================
 struct GLState {
     GLint prog, tex, aTex, aBuf, eBuf, vao, fbo, vp[4], sc[4], bSrc, bDst, bSrcA, bDstA;
     GLboolean blend, cull, depth, scissor, stencil, dither;
-    GLint frontFace, polygonMode[2], activeTexture;
+    GLint frontFace, activeTexture;
 };
 
 static void SaveGL(GLState& s) {
@@ -503,7 +503,7 @@ static void SaveGL(GLState& s) {
     glGetIntegerv(GL_BLEND_DST_RGB, &s.bDst);
     glGetIntegerv(GL_BLEND_SRC_ALPHA, &s.bSrcA);
     glGetIntegerv(GL_BLEND_DST_ALPHA, &s.bDstA);
-    // 完整保存GL状态
+    // 完整保存GLES3支持的GL状态
     s.blend = glIsEnabled(GL_BLEND);
     s.cull = glIsEnabled(GL_CULL_FACE);
     s.depth = glIsEnabled(GL_DEPTH_TEST);
@@ -511,7 +511,6 @@ static void SaveGL(GLState& s) {
     s.stencil = glIsEnabled(GL_STENCIL_TEST);
     s.dither = glIsEnabled(GL_DITHER);
     glGetIntegerv(GL_FRONT_FACE, &s.frontFace);
-    glGetIntegerv(GL_POLYGON_MODE, s.polygonMode);
 }
 
 static void RestoreGL(const GLState& s) {
@@ -526,7 +525,7 @@ static void RestoreGL(const GLState& s) {
     glScissor(s.sc[0], s.sc[1], s.sc[2], s.sc[3]);
     // 完整恢复混合模式
     glBlendFuncSeparate(s.bSrc, s.bDst, s.bSrcA, s.bDstA);
-    // 完整恢复GL状态
+    // 完整恢复GLES3支持的GL状态
     s.blend ? glEnable(GL_BLEND) : glDisable(GL_BLEND);
     s.cull ? glEnable(GL_CULL_FACE) : glDisable(GL_CULL_FACE);
     s.depth ? glEnable(GL_DEPTH_TEST) : glDisable(GL_DEPTH_TEST);
@@ -534,7 +533,6 @@ static void RestoreGL(const GLState& s) {
     s.stencil ? glEnable(GL_STENCIL_TEST) : glDisable(GL_STENCIL_TEST);
     s.dither ? glEnable(GL_DITHER) : glDisable(GL_DITHER);
     glFrontFace(s.frontFace);
-    glPolygonMode(GL_FRONT_AND_BACK, s.polygonMode[0]);
 }
 
 // ===================== 【修复中文乱码】ImGui环境初始化 =====================
