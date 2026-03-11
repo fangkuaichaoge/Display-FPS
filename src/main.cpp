@@ -61,13 +61,13 @@ static void SaveGL(GLState& s) {
 static void RestoreGL(const GLState& s) {
     glUseProgram(s.prog);
     glActiveTexture(s.aTex);
-    glBindTexture(GL_TEXTURE_2D, &s.tex);
+    glBindTexture(GL_TEXTURE_2D, s.tex); // 🔥 修复1：去掉&
     glBindBuffer(GL_ARRAY_BUFFER, s.aBuf);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s.eBuf);
     glBindVertexArray(s.vao);
     glBindFramebuffer(GL_FRAMEBUFFER, s.fbo);
     glViewport(s.vp[0], s.vp[1], s.vp[2], s.vp[3]);
-    glScissor(s.sc[0], s.sc[1], s.sc[2], s.sc[3]);
+    glScissor(sc.sc[0], sc.sc[1], sc.sc[2], sc.sc[3]);
     glBlendFunc(s.bSrc, s.bDst);
     s.blend ? glEnable(GL_BLEND) : glDisable(GL_BLEND);
     s.cull ? glEnable(GL_CULL_FACE) : glDisable(GL_CULL_FACE);
@@ -75,16 +75,12 @@ static void RestoreGL(const GLState& s) {
     s.scissor ? glEnable(GL_SCISSOR_TEST) : glDisable(GL_SCISSOR_TEST);
 }
 
-// 🔥 美化后的 FPS 绘制（悬浮透明、居右上、高亮数字、圆角）
 static void DrawMenu() {
     ImGuiIO& io = ImGui::GetIO();
 
-    // 窗口位置：右上角悬浮 + 边距
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 140.0f, 20.0f), ImGuiCond_Always);
-    // 窗口大小固定，不拉伸
     ImGui::SetNextWindowSize(ImVec2(120.0f, 50.0f), ImGuiCond_Always);
 
-    // 窗口标志：无边框、无交互、透明、不占焦点
     ImGui::Begin("FPS", nullptr,
         ImGuiWindowFlags_NoDecoration |
         ImGuiWindowFlags_AlwaysAutoResize |
@@ -95,10 +91,8 @@ static void DrawMenu() {
         ImGuiWindowFlags_NoInputs
     );
 
-    // 文字居中 + 颜色高亮
-    ImGui::SetCursorPosX(ImGui::GetWindowWidth() * 0.5f - ImGui::CalcTextSize("FPS").x * 0.5f);
+    // 🔥 修复2：CalcTextSize只传字符串
     ImGui::TextColored(ImVec4(0.4f, 0.9f, 1.0f, 1.0f), "FPS");
-    ImGui::SetCursorPosX(ImGui::GetWindowWidth() * 0.5f - ImGui::CalcTextSize("%.1f", io.Framerate).x * 0.5f);
     ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.2f, 1.0f), "%.1f", io.Framerate);
 
     ImGui::End();
@@ -110,21 +104,19 @@ static void Setup() {
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
 
-    // 缩放适配手机
     float scale = (float)g_Height / 720.0f;
     scale = (scale < 1.5f) ? 1.5f : (scale > 4.0f ? 4.0f : scale);
 
-    // 字体
     ImFontConfig cfg;
     cfg.SizePixels = 32.0f * scale;
     io.Fonts->AddFontDefault(&cfg);
 
-    // 🔥 ImGui 全局样式美化（圆角、透明、紧凑）
     ImGuiStyle& style = ImGui::GetStyle();
-    style.WindowRounding = 12.0f;       // 圆角
-    style.WindowPadding = ImVec2(8, 8); // 内边距
-    style.WindowBorderSize = 0.0f;      // 无边框
-    style.WindowBgColor = ImVec4(0.1f, 0.1f, 0.15f, 0.85f); // 半透明背景
+    style.WindowRounding = 12.0f;
+    style.WindowPadding = ImVec2(8, 8);
+    style.WindowBorderSize = 0.0f;
+    // 🔥 修复3：正确的ImGui窗口背景颜色
+    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.1f, 0.1f, 0.15f, 0.85f);
 
     ImGui_ImplAndroid_Init();
     ImGui_ImplOpenGL3_Init("#version 300 es");
