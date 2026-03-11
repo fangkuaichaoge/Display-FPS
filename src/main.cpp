@@ -5,6 +5,9 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <dlfcn.h>
+#include <time.h>
+#include <cstdio>
+#include <string>
 
 #include "pl/Hook.h"
 #include "pl/Gloss.h"
@@ -76,24 +79,54 @@ static void RestoreGL(const GLState& s) {
     s.scissor ? glEnable(GL_SCISSOR_TEST) : glDisable(GL_SCISSOR_TEST);
 }
 
+struct HudData {
+    float fps;
+    float cps;
+    float cpuUsage;
+    float latency;
+    float memoryUsage;
+};
+
+static HudData g_HudData = {0};
+static bool g_ShowDetails = false; // 控制展开折叠状态
+
 static void DrawMenu() {
     ImGuiIO& io = ImGui::GetIO();
 
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 140.0f, 20.0f), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(120.0f, 50.0f), ImGuiCond_Always);
+    const float pad = 18.0f;
+    ImVec2 window_size = ImVec2(220.0f, 160.0f); // 更加宽敞的窗口
+    ImVec2 pos = ImVec2(io.DisplaySize.x - window_size.x - pad, pad);
 
-    ImGui::Begin("FPS", nullptr,
-        ImGuiWindowFlags_NoDecoration |
-        ImGuiWindowFlags_AlwaysAutoResize |
-        ImGuiWindowFlags_NoSavedSettings |
-        ImGuiWindowFlags_NoFocusOnAppearing |
-        ImGuiWindowFlags_NoNav |
-        ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoInputs
-    );
+    ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
+    ImGui::SetNextWindowSize(window_size, ImGuiCond_Always);
 
-    ImGui::TextColored(ImVec4(0.4f, 0.9f, 1.0f, 1.0f), "FPS");
-    ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.2f, 1.0f), "%.1f", io.Framerate);
+    ImGui::Begin("Performance HUD", nullptr,
+                 ImGuiWindowFlags_NoDecoration |
+                 ImGuiWindowFlags_NoSavedSettings |
+                 ImGuiWindowFlags_NoFocusOnAppearing |
+                 ImGuiWindowFlags_NoNav |
+                 ImGuiWindowFlags_NoMove);
+
+    // 标题：
+    ImGui::TextColored(ImVec4(0.95f, 0.96f, 0.98f, 1.00f), "☘︎  Matcha HUD");
+    ImGui::Separator();
+
+    // 动态数据显示
+    ImGui::Text("FPS: %.1f", g_HudData.fps);
+    ImGui::Text("CPS: %.1f", g_HudData.cps);
+    ImGui::Text("CPU: %.1f%%", g_HudData.cpuUsage);
+    ImGui::Text("Latency: %.1f ms", g_HudData.latency);
+    ImGui::Text("Memory: %.1f MB", g_HudData.memoryUsage);
+
+    // 可展开的详情菜单
+    if (ImGui::Button(g_ShowDetails ? "▲ Hide Details" : "▼ Show Details", ImVec2(-1, 0))) {
+        g_ShowDetails = !g_ShowDetails;
+    }
+
+    if (g_ShowDetails) {
+        ImGui::Text("Detailed Metrics:");
+        ImGui::Text("[Additional stats placeholder]");
+    }
 
     ImGui::End();
 }
@@ -105,17 +138,38 @@ static void Setup() {
     io.IniFilename = nullptr;
 
     float scale = (float)g_Height / 720.0f;
-    scale = (scale < 1.5f) ? 1.5f : (scale > 4.0f ? 4.0f : scale);
+    scale = (scale < 1.6f) ? 1.6f : (scale > 4.0f ? 4.0f : scale);
 
     ImFontConfig cfg;
-    cfg.SizePixels = 32.0f * scale;
-    io.Fonts->AddFontDefault(&cfg);
+    cfg.SizePixels = 36.0f * scale; // 更大字体
+    cfg.OversampleH = cfg.OversampleV = 2;
+    cfg.PixelSnapH = true;
+    ImFont* defaultFont = io.Fonts->AddFontDefault(&cfg);
+    io.FontDefault = defaultFont;
 
     ImGuiStyle& style = ImGui::GetStyle();
-    style.WindowRounding = 12.0f;
-    style.WindowPadding = ImVec2(8, 8);
+    style.WindowRounding = 14.0f;
+    style.FrameRounding = 8.0f;
+    style.GrabRounding = 8.0f;
+    style.WindowPadding = ImVec2(12, 12);
+    style.FramePadding = ImVec2(10, 8);
+    style.ItemSpacing = ImVec2(10, 8);
     style.WindowBorderSize = 0.0f;
-    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.1f, 0.1f, 0.15f, 0.85f);
+    style.FrameBorderSize = 0.0f;
+    style.PopupRounding = 10.0f;
+
+    // 抹茶绿色主题（暗底）
+    ImVec4* colors = style.Colors;
+    colors[ImGuiCol_Text] = ImVec4(0.96f, 0.97f, 0.98f, 1.00f);
+    colors[ImGuiCol_WindowBg] = ImVec4(0.05f, 0.06f, 0.06f, 0.88f);
+    colors[ImGuiCol_FrameBg] = ImVec4(0.09f, 0.11f, 0.10f, 0.95f);
+    colors[ImGuiCol_FrameBgHovered] = ImVec4(0.12f, 0.14f, 0.12f, 1.00f);
+    colors[ImGuiCol_Button] = ImVec4(0.12f, 0.55f, 0.35f, 0.95f);
+    colors[ImGuiCol_ButtonHovered] = ImVec4(0.16f, 0.68f, 0.45f, 0.98f);
+    colors[ImGuiCol_ButtonActive] = ImVec4(0.08f, 0.46f, 0.28f, 1.00f);
+    colors[ImGuiCol_Header] = ImVec4(0.14f, 0.58f, 0.36f, 0.95f);
+    colors[ImGuiCol_TitleBg] = ImVec4(0.06f, 0.08f, 0.07f, 0.95f);
+    colors[ImGuiCol_TitleBgActive] = ImVec4(0.08f, 0.10f, 0.09f, 1.00f);
 
     ImGui_ImplAndroid_Init();
     ImGui_ImplOpenGL3_Init("#version 300 es");
@@ -130,10 +184,30 @@ static void Render() {
     SaveGL(s);
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2((float)g_Width, (float)g_Height);
+
+    static double last_time = 0.0;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    double now = ts.tv_sec + ts.tv_nsec * 1e-9;
+    float dt = 1.0f / 60.0f;
+    if (last_time > 0.0) dt = (float)(now - last_time);
+    last_time = now;
+    if (dt <= 0.0f) dt = 1.0f / 60.0f;
+    io.DeltaTime = dt;
+
+    // 模拟动态数据（实际项目应从系统查询或实时计算获得）
+    g_HudData.fps = io.Framerate;
+    g_HudData.cps = g_HudData.fps * 0.8f; // 假设近似关系
+    g_HudData.cpuUsage = (rand() % 100) / 100.0f * 50.0f; // 模拟 CPU 使用率 0%~50%
+    g_HudData.latency = (rand() % 100) / 100.0f * 40.0f; // 模拟延迟 0~40ms
+    g_HudData.memoryUsage = 100 + (rand() % 50); // 假设占用内存 100~150MB
+
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplAndroid_NewFrame(g_Width, g_Height);
     ImGui::NewFrame();
+
     DrawMenu();
+
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     RestoreGL(s);
@@ -146,7 +220,7 @@ static EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surf) {
     EGLint w = 0, h = 0;
     eglQuerySurface(dpy, surf, EGL_WIDTH, &w);
     eglQuerySurface(dpy, surf, EGL_HEIGHT, &h);
-    if (w < 500 || h < 500) return orig_eglSwapBuffers(dpy, surf);
+    if (w < 400 || h < 400) return orig_eglSwapBuffers(dpy, surf);
     if (g_TargetContext == EGL_NO_CONTEXT) {
         EGLint buf = 0;
         eglQuerySurface(dpy, surf, EGL_RENDER_BUFFER, &buf);
