@@ -17,6 +17,7 @@ static bool g_Initialized = false;
 static int g_Width = 0, g_Height = 0;
 static EGLContext g_TargetContext = EGL_NO_CONTEXT;
 static EGLSurface g_TargetSurface = EGL_NO_SURFACE;
+static pthread_mutex_t g_Lock = PTHREAD_MUTEX_INITIALIZER;
 
 static EGLBoolean (*orig_eglSwapBuffers)(EGLDisplay, EGLSurface) = nullptr;
 
@@ -50,8 +51,8 @@ static void SaveGL(GLState& s) {
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &s.fbo);
     glGetIntegerv(GL_VIEWPORT, s.vp);
     glGetIntegerv(GL_SCISSOR_BOX, s.sc);
-    glGetIntegerv(GL_BLEND_SRC_ALPHA, &s.bSrc);
-    glGetIntegerv(GL_BLEND_DST_ALPHA, &s.bDst);
+    glGetIntegerv(GL_BLEND_SRC_RGB, &s.bSrc);
+    glGetIntegerv(GL_BLEND_DST_RGB, &s.bDst);
     s.blend = glIsEnabled(GL_BLEND);
     s.cull = glIsEnabled(GL_CULL_FACE);
     s.depth = glIsEnabled(GL_DEPTH_TEST);
@@ -61,13 +62,13 @@ static void SaveGL(GLState& s) {
 static void RestoreGL(const GLState& s) {
     glUseProgram(s.prog);
     glActiveTexture(s.aTex);
-    glBindTexture(GL_TEXTURE_2D, s.tex); // 🔥 修复1：去掉&
+    glBindTexture(GL_TEXTURE_2D, s.tex);
     glBindBuffer(GL_ARRAY_BUFFER, s.aBuf);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s.eBuf);
     glBindVertexArray(s.vao);
     glBindFramebuffer(GL_FRAMEBUFFER, s.fbo);
     glViewport(s.vp[0], s.vp[1], s.vp[2], s.vp[3]);
-    glScissor(sc.sc[0], sc.sc[1], sc.sc[2], sc.sc[3]);
+    glScissor(s.sc[0], s.sc[1], s.sc[2], s.sc[3]);
     glBlendFunc(s.bSrc, s.bDst);
     s.blend ? glEnable(GL_BLEND) : glDisable(GL_BLEND);
     s.cull ? glEnable(GL_CULL_FACE) : glDisable(GL_CULL_FACE);
@@ -91,7 +92,6 @@ static void DrawMenu() {
         ImGuiWindowFlags_NoInputs
     );
 
-    // 🔥 修复2：CalcTextSize只传字符串
     ImGui::TextColored(ImVec4(0.4f, 0.9f, 1.0f, 1.0f), "FPS");
     ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.2f, 1.0f), "%.1f", io.Framerate);
 
@@ -115,7 +115,6 @@ static void Setup() {
     style.WindowRounding = 12.0f;
     style.WindowPadding = ImVec2(8, 8);
     style.WindowBorderSize = 0.0f;
-    // 🔥 修复3：正确的ImGui窗口背景颜色
     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.1f, 0.1f, 0.15f, 0.85f);
 
     ImGui_ImplAndroid_Init();
