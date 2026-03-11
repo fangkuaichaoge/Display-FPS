@@ -322,7 +322,8 @@ static void DrawUI() {
     }
 
     ImGui::Separator();
-    ImGui::Spacing(10);
+    // 修复：自定义间距用Dummy，替换原来的Spacing(10)
+    ImGui::Dummy(ImVec2(0, 10));
 
     // 线程安全读取状态
     std::lock_guard<std::mutex> lock(g_state_mutex);
@@ -339,7 +340,8 @@ static void DrawUI() {
         }
     }
 
-    ImGui::Spacing(8);
+    // 修复：替换Spacing(8)
+    ImGui::Dummy(ImVec2(0, 8));
 
     // 状态显示
     ImGui::TextColored(titleColor, "当前状态：");
@@ -354,9 +356,11 @@ static void DrawUI() {
         ImGui::Text("等待执行备份");
     }
 
-    ImGui::Spacing(8);
+    // 修复：替换Spacing(8)
+    ImGui::Dummy(ImVec2(0, 8));
     ImGui::Separator();
-    ImGui::Spacing(8);
+    // 修复：替换Spacing(8)
+    ImGui::Dummy(ImVec2(0, 8));
 
     // 日志预览区域
     ImGui::TextColored(titleColor, "备份日志：");
@@ -364,6 +368,7 @@ static void DrawUI() {
     for (const auto& log_line : g_backup_state.recent_logs) {
         ImGui::TextWrapped("%s", log_line.c_str());
     }
+    // 自动滚动到最新日志
     if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 10.0f) {
         ImGui::SetScrollHereY(1.0f);
     }
@@ -423,7 +428,7 @@ static void SetupImGui() {
 
     // 屏幕自动缩放适配
     float scale = (float)g_Screen_Height / 720.0f;
-    scale = (scale < 1.6f) ? 1.6f : (scale > 4.0f ? 4.0f : scale);
+    scale = (scale < 1.6f) ? 1.6f : (scale > 4.0f) ? 4.0f : scale;
 
     // 字体高清渲染
     ImFontConfig cfg;
@@ -540,11 +545,11 @@ static void HookInput() {
     if (sym2) GlossHook(sym2, (void*)hook_Input2, (void**)&orig_Input2);
 }
 
-// ===================== SO注入入口（已删除3秒延迟） =====================
+// ===================== SO注入入口（无延迟） =====================
 __attribute__((constructor))
 void MCbackup_Init() {
     std::thread([=]() {
-        // 已彻底删除sleep(3)延迟，SO加载后直接初始化
+        // 已彻底删除延迟，SO加载后直接初始化
         GlossInit(true);
         GHandle hEGL = GlossOpen("libEGL.so");
         if (!hEGL) return;
